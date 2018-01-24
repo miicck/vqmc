@@ -19,10 +19,13 @@ implicit none
 
 end module
 
-! Things to do with hydrogen
-module hydrogen
+! A system with a nucleus of the given charge
+! at the origin
+module hydrogenicSystem
 use constants
 implicit none
+
+    real(prec) :: nuclearCharge = 1
 
 contains
 
@@ -31,16 +34,66 @@ contains
     function groundState(x)
     implicit none
         real(prec) :: x(3), groundState
-        groundState = exp(-norm2(x)/a0)
+        groundState = exp(-nuclearCharge*norm2(x)/a0)
     end function
 
     ! Hydrogen potential
     function potential(x)
     implicit none
         real(prec) :: x(3), potential
-        potential = -qElectron**2/(4*pi*epsNaught*norm2(x))
+        potential = -nuclearCharge*qElectron**2/(4*pi*epsNaught*norm2(x))
     end function
     
+end module
+
+! Things to do with the particle in a 3D box
+module particleInBox
+use constants
+implicit none
+
+    real(prec), parameter :: boxSize = angstrom
+    real(prec), parameter :: infiniteEnergy = huge(prec)
+
+contains
+
+    ! The particle in a box ground state
+    function groundState(x)
+    implicit none
+        real(prec) :: x(3), groundState
+        if (outsideBounds(x(1))) then
+            groundState = 0
+        else if (outsideBounds(x(2))) then
+            groundState = 0
+        else if (outsideBounds(x(3))) then
+            groundState = 0
+        else
+            groundState = sin(pi*x(1)/boxSize)*sin(pi*x(2)/boxSize)*sin(pi*x(3)/boxSize);
+        endif
+    end function
+
+    ! The particle in a box potential
+    function potential(x)
+    implicit none
+        real(prec) :: x(3), potential
+        if (outsideBounds(x(1))) then
+            potential = infiniteEnergy
+        else if (outsideBounds(x(2))) then
+            potential = infiniteEnergy
+        else if (outsideBounds(x(3))) then
+            potential = infiniteEnergy
+        else
+            potential = 0
+        endif
+    end function
+
+    ! Returns true if the single coordinate x is outside the box
+    function outsideBounds(x)
+    implicit none
+        real(prec) :: x
+        logical :: outsideBounds
+        outsideBounds = or(x<0,x>boxSize) 
+    end function
+
 end module
 
 ! Module that carries out the monte-carlo integration
@@ -48,8 +101,12 @@ module vqmc
 use constants
 implicit none
 
+    ! Flag to output the sampled points
+    logical :: DEBUG_LOG_SAMPLES = .false.
+
     ! The number of monte-carlo itterations
-    integer,    parameter :: MC_ITTER = 1000000
+    integer, parameter :: MC_ITTER = 1000000
+    integer, parameter :: MC_INIT_STEPS = 1000
 
     ! The minimum distance from the divergent origin
     ! our trial electrons are allowed
@@ -63,16 +120,29 @@ contains
     function energy(wavefunction, potential) result(ret)
     implicit none
         procedure(real(prec)) :: wavefunction, potential
-        real(prec) :: x(3), ret
+        real(prec) :: x(3), ret, localE
         integer    :: i
 
+        if (DEBUG_LOG_SAMPLES) open(unit=1,file="samples")
         x = 0
-        ret = 0    
+        ret = 0
+
+        ! Get rid of any dependence on initial conditions
+        ! by carring out MC_INIT_STEPS trial moves and
+        ! ignoring them
+        do i=1,MC_INIT_STEPS
+            call metro(x,wavefunction)
+        enddo
+
+        ! Actually sample
         do i=1, MC_ITTER
             call metro(x, wavefunction)
-            ret = ret + localEnergy(wavefunction, potential, x)
+            localE = localEnergy(wavefunction, potential, x)
+            if (DEBUG_LOG_SAMPLES) write(1,*) localE,","
+            ret = ret + localE
         enddo
         ret = ret/MC_ITTER
+
     end function
 
     ! Calculate the second derivative of the wavefunction
@@ -144,24 +214,18 @@ end module vqmc
 
 program main
 use vqmc
-use hydrogen
+use hydrogenicSystem
 implicit none
 
     real(prec) :: start, end
 
-    ! Calculate the ground state energy of the
-    ! hydrogen atom using vqmc
+    !DEBUG_LOG_SAMPLES = .true.
+
+    ! Calculate the ground state energy using vqmc
     call cpu_time(start)
-    print *, "Calculated rydberg (eV):", energy(groundState, potential)/electronVolt
+    print *, "Calculated system energy (eV):", energy(groundState, potential)/electronVolt
     call cpu_time(end)
     print *, "Monte-carlo itterations:", MC_ITTER  
     print *, "Elapsed time:           ", end-start
-
-contains
-
-    function zero(x)
-        real(prec) :: x(3), zero
-        zero = 0
-    end function
 
 end program main
