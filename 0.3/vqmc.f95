@@ -7,9 +7,6 @@ module vqmc
 use constants
 implicit none
 
-    ! Flag to output the sampled points
-    logical :: DEBUG_LOG = .false.
-
     ! The number of monte-carlo itterations
     integer, parameter :: MC_ITTER = 1000000
     integer, parameter :: MC_INIT_STEPS = 1000
@@ -18,14 +15,38 @@ implicit none
     ! our trial electrons are allowed
     real(prec), parameter :: minR = angstrom/10000
 
+    ! An object that can be used as a basis function
+    type, abstract :: basisState
+    contains
+        procedure(basisWfn), deferred :: value
+    end type
+
     abstract interface
+        ! A wavefunction
         function wvfn(x)
-            real(8) :: x(3)
-            complex(8) :: wvfn
+            import
+            real(prec) :: x(3)
+            complex(prec) :: wvfn
+        end function
+
+        ! Interface for basis function
+        function basisWfn(this, x)
+            import
+            class(basisState) :: this
+            real(prec)    :: x(3)
+            complex(prec) :: basisWfn
         end function
     end interface
 
 contains
+
+    ! Optimize the coefficeints in the given basis to
+    ! minimize the energy in the given potential
+    subroutine optimizeBasis(basis, potential)
+    implicit none
+        class(basisState)     :: basis(:)
+        procedure(real(prec)) :: potential
+    end subroutine
 
     ! Carry out a monte carlo integration of the local energy of the
     ! wavefunction in the given potential, using importance sampling
@@ -34,11 +55,10 @@ contains
     implicit none
         procedure(real(prec)) :: potential
         procedure(wvfn)       :: wavefunction
-        complex(prec)         :: ret, localE
+        complex(prec)         :: ret
         real(prec) :: x(3)
         integer    :: i
 
-        if (DEBUG_LOG) open(unit=1,file="log")
         x = 0
         ret = 0
 
@@ -52,9 +72,7 @@ contains
         ! Actually sample
         do i=1, MC_ITTER
             call metro(x, wavefunction)
-            localE = localEnergy(wavefunction, potential, x)
-            if (DEBUG_LOG) write(1,*) localE,","
-            ret = ret + localE
+            ret = ret + localEnergy(wavefunction, potential, x)
         enddo
         ret = ret/MC_ITTER
 
@@ -111,7 +129,8 @@ contains
         dx(3) = r*cos(theeta)
 
         newX = x + dx
-        if (rand() < importance(newX, wavefunction)/importance(x, wavefunction)) then
+        if (rand() < abs(wavefunction(newX))**2 / & 
+                     abs(wavefunction(x))**2) then
             x = newX ! Accept the move via metropolis criteria
         endif
 
@@ -121,42 +140,4 @@ contains
         endif
     end subroutine
 
-    ! The importance function used in importance sampling
-    ! in our case this is our electronic wavefunction
-    function importance(x, wavefunction)
-    implicit none
-        real(prec) :: x(3), importance
-        procedure (wvfn) :: wavefunction
-        importance = abs(wavefunction(x))**2
-    end function
-
 end module vqmc
-
-program main
-use vqmc
-use particleInBox
-use atomicBasis
-implicit none
-
-    real(prec) :: start, end, x
-    integer :: i, n, l
-
-    !open(unit=2,file="toPlot")
-    !call debugRadialPart(2)
-    !call debugAssociatedLegendrePolynomial(2)
-
-    !open(unit=3,file="toPlot2D")
-    !call debugWavefunctions(3)
-
-    !return
-
-    DEBUG_LOG = .false.
-
-    ! Calculate the ground state energy using vqmc
-    call cpu_time(start)
-    print *, "Calculated system energy (eV):", energy(groundState, potential)/electronVolt
-    call cpu_time(end)
-    print *, "Monte-carlo itterations:", MC_ITTER  
-    print *, "Elapsed time:           ", end-start
-
-end program main

@@ -80,9 +80,42 @@ end module
 ! Atomic basis functions
 module atomicBasis
 use constants
+use vqmc, only: basisState
 implicit none
 
+    type, extends(basisState) :: atomicState
+    private
+        integer :: n, l, m, z
+    contains
+        procedure :: value
+    end type
+
+    interface atomicState
+        module procedure constructor
+    end interface
+
 contains
+
+    ! Implementation of atomicBasis value
+    function value(this, x)
+    implicit none
+    class(atomicState) :: this
+    complex(prec) :: value
+    real(prec)    :: x(3)
+        value = atomicWavefunction(this%n,this%l,this%m,this%z,x)
+    end function
+
+    ! Atomic state constructor
+    function constructor(n, l, m, z) result(this)
+    implicit none
+        type(atomicState), pointer :: this
+        integer :: n, l, m, z
+        allocate(this)
+        this%n = n
+        this%l = l
+        this%m = m
+        this%z = z
+    end function
 
     ! Returns L_n^a(x) via recursion relation
     recursive function laguerrePolynomial(n, a, x) result(ret)
