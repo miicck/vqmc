@@ -120,7 +120,7 @@ end module vqmc
 
 program main
 use vqmc
-use hydrogenicSystem
+use particleInBox
 implicit none
 
     real(prec) :: start, end
