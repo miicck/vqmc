@@ -12,7 +12,8 @@ contains
     ! Wavefunction (not normalized)
     function groundState(x)
     implicit none
-        real(prec) :: x(3), groundState
+        real(prec)    :: x(3)
+        complex(prec) :: groundState
         groundState = exp(-nuclearCharge*norm2(x)/a0)
     end function
 
@@ -38,7 +39,8 @@ contains
     ! The particle in a box ground state
     function groundState(x)
     implicit none
-        real(prec) :: x(3), groundState
+        real(prec)    :: x(3)
+        complex(prec) :: groundState
         if (outsideBounds(x(1))) then
             groundState = 0
         else if (outsideBounds(x(2))) then
@@ -148,7 +150,7 @@ contains
     implicit none
     integer    :: l, m
     real(prec) :: theeta, phi
-    complex    :: ret
+    complex(prec)    :: ret
         ret = exp(complex(0,1)*m*phi)
         ret = ret * associatedLegendrePolynomial(l,m,cos(theeta))      
     end function
@@ -158,7 +160,7 @@ contains
     implicit none
     integer    :: n, l, m, z
     real(prec) :: x(3), theeta, phi
-    complex    :: ret
+    complex(prec)    :: ret
         phi = atan(x(2)/x(1))
         theeta = acos(x(3)/norm2(x))
         ret = sphericalHarmonic(l, m, theeta, phi)
@@ -171,7 +173,7 @@ contains
     integer    :: unit, xi, yi, n, l, m
     integer, parameter :: grid = 100
     real(prec) :: r(3), a
-    complex    :: w
+    complex(prec)    :: w
         r = 0
         n = 6
         l = 2

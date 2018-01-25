@@ -18,6 +18,13 @@ implicit none
     ! our trial electrons are allowed
     real(prec), parameter :: minR = angstrom/10000
 
+    abstract interface
+        function wvfn(x)
+            real(8) :: x(3)
+            complex(8) :: wvfn
+        end function
+    end interface
+
 contains
 
     ! Carry out a monte carlo integration of the local energy of the
@@ -25,8 +32,10 @@ contains
     ! of the wavefunction
     function energy(wavefunction, potential) result(ret)
     implicit none
-        procedure(real(prec)) :: wavefunction, potential
-        real(prec) :: x(3), ret, localE
+        procedure(real(prec)) :: potential
+        procedure(wvfn)       :: wavefunction
+        complex(prec)         :: ret, localE
+        real(prec) :: x(3)
         integer    :: i
 
         if (DEBUG_LOG) open(unit=1,file="log")
@@ -54,8 +63,9 @@ contains
     ! Calculate the second derivative of the wavefunction
     ! in the given direction using finite differences
     function secondDerivative(wavefunction, x, dir)
-        procedure(real(prec)) :: wavefunction
-        real(prec) :: x(3), dir(3), secondDerivative
+        procedure(wvfn) :: wavefunction
+        complex(prec)   :: secondDerivative
+        real(prec)      :: x(3), dir(3)
         real(prec), parameter :: eps = 0.00001 * angstrom
         dir = eps * dir/norm2(dir)
         secondDerivative = wavefunction(x+dir) - 2*wavefunction(x) + wavefunction(x-dir)
@@ -64,8 +74,9 @@ contains
 
     ! Calculate psi^-1(x) T psi(x)
     function localKineticEnergy(wavefunction, x)
-        procedure(real(prec)) :: wavefunction
-        real(prec) :: x(3), localKineticEnergy, dx, dy, dz
+        procedure(wvfn) :: wavefunction
+        real(prec)      :: x(3)
+        complex(prec)   :: dx, dy, dz, localKineticEnergy
         dx = secondDerivative(wavefunction,x,real((/1,0,0/),kind=prec))
         dy = secondDerivative(wavefunction,x,real((/0,1,0/),kind=prec))
         dz = secondDerivative(wavefunction,x,real((/0,0,1/),kind=prec))
@@ -77,8 +88,10 @@ contains
     ! with the given potential at x
     function localEnergy(wavefunction, potential, x)
     implicit none
-        procedure(real(prec)) :: wavefunction, potential
-        real(prec) :: x(3), localEnergy
+        procedure(wvfn) :: wavefunction
+        procedure(real(prec)) :: potential
+        complex(prec)         :: localEnergy        
+        real(prec) :: x(3)
         localEnergy = localKineticEnergy(wavefunction,x) + potential(x)
     end function
 
@@ -86,7 +99,7 @@ contains
     subroutine metro(x, wavefunction)
     implicit none
         real(prec) :: x(3), newX(3) , dx(3), r, theeta, phi
-        procedure (real(prec)) :: wavefunction
+        procedure (wvfn) :: wavefunction
 
         ! Move some distance r in any direction
         theeta = rand()*pi
@@ -112,8 +125,9 @@ contains
     ! in our case this is our electronic wavefunction
     function importance(x, wavefunction)
     implicit none
-        real(prec) :: x(3), importance, wavefunction
-        importance = wavefunction(x)**2
+        real(prec) :: x(3), importance
+        procedure (wvfn) :: wavefunction
+        importance = abs(wavefunction(x))**2
     end function
 
 end module vqmc
@@ -131,10 +145,10 @@ implicit none
     !call debugRadialPart(2)
     !call debugAssociatedLegendrePolynomial(2)
 
-    open(unit=3,file="toPlot2D")
-    call debugWavefunctions(3)
+    !open(unit=3,file="toPlot2D")
+    !call debugWavefunctions(3)
 
-    return
+    !return
 
     DEBUG_LOG = .false.
 
