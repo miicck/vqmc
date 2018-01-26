@@ -7,10 +7,6 @@ module vqmc
 use constants
 implicit none
 
-    ! The number of monte-carlo itterations
-    integer, parameter :: MC_ITTER = 1000000
-    integer, parameter :: MC_INIT_STEPS = 1000
-
     ! The minimum distance from the divergent origin
     ! our trial electrons are allowed
     real(prec), parameter :: minR = angstrom/10000
@@ -46,46 +42,45 @@ contains
     implicit none
         class(basisState)          :: basis(:)
         procedure(real(prec))      :: potential
-        complex(prec), allocatable :: coefficients(:)
-        complex(prec)              :: lowestEnergy, currentEnergy
-        real(prec)                 :: inf
-        integer                    :: i, c
+        complex(prec), allocatable :: coefficients(:), designMatrix(:,:), dTd(:,:)
+        integer                    :: i, n, m
+        real(prec)                 :: samples(3,100), varE
+        complex(prec), parameter   :: oneCplx = 1 ! FORTRAN
 
-        ! Initialize our best energy to infinity
-        ! and allocate space for our coefficients
-        lowestEnergy = huge(inf)
+        ! Allocate space for our coefficients
+        ! initialize them all to 1
         allocate(coefficients(size(basis)))
-
-        ! Run optimization cycles
-        c = 0
-        do while(.true.)
-            c = c + 1
-            
-            call randomizeCoefficients(coefficients)
-
-            ! Calculate energy with new coefficients
-            print *, ""
-            print *, ""
-            print *, "Optimization cycle: ", c
-            currentEnergy = energy(basis, coefficients, potential)
-
-            if (realpart(currentEnergy) < realpart(lowestEnergy)) then
-
-                ! Improved ground state estimate
-                lowestEnergy = currentEnergy
-                print *, "Decreased energy to: ", lowestEnergy/electronVolt
-                do i=1,size(basis)
-                    print *, "    Coefficient: ", i, ":", coefficients(i)
-                enddo
-
-            else
-
-                ! Didn't improve ground state estimate
-                print *, "Failed to decrease energy."
-
-            endif
-
+        do i=1,size(basis)
+            coefficients(i) = 1
         enddo
+
+        ! Allocate our matricies for least-squares
+        allocate(designMatrix(size(basis),size(samples,2)))
+        allocate(dTd(size(basis),size(basis)))
+
+        ! Get a set of samples using the metropolis algorithm
+        call metro(samples, basis, coefficients)
+
+        ! Calculate our variational energy <E_L>
+        varE = energy(basis, coefficients, potential, samples)
+        
+        ! Calculate the entries of our design matrix
+        do n=1,size(basis)
+            do m=1,size(samples,2)
+                designMatrix(m,n) = &
+                    localEnergy(basis((/n/)), (/oneCplx/), &
+                    potential, samples(:,m)) / &
+                    wavefunction(basis,coefficients,samples(:,m))
+            enddo
+        enddo
+
+        ! Calculate D^T*D, our least squares projection matrix
+        dTd = matmul(transpose(designMatrix), designMatrix)
+        call potrf(dTd)
+        call potri(dTd)
+
+        ! Print the energy with the given coefficients etc..
+        print *, energy(basis, coefficients, potential, samples)/electronVolt
 
     end subroutine
 
@@ -153,61 +148,67 @@ contains
     end function
 
     ! Carry out a monte carlo integration of the local energy of the
-    ! wavefunction in the given potential, using importance sampling
-    ! of the wavefunction
-    function energy(basis, coefficients, potential) result(ret)
+    ! wavefunction in the given potential, using the sample positions
+    ! provided
+    function energy(basis, coefficients, potential, samples) result(ret)
     implicit none
         procedure(real(prec)) :: potential
         class(basisState)     :: basis(:)
         complex(prec)         :: ret, coefficients(:)
-        real(prec) :: x(3)
+        real(prec) :: samples(:,:)
         integer    :: i
 
-        x = 0
         ret = 0
-
-        ! Get rid of any dependence on initial conditions
-        ! by carring out MC_INIT_STEPS trial moves and
-        ! ignoring them
-        do i=1,MC_INIT_STEPS
-            call metro(x, basis, coefficients)
+        do i=1, size(samples,2)
+            ret = ret + localEnergy(basis, coefficients, potential, samples(:,i))
         enddo
-
-        ! Actually sample
-        do i=1, MC_ITTER
-            call metro(x, basis, coefficients)
-            ret = ret + localEnergy(basis, coefficients, potential, x)
-        enddo
-        ret = ret/MC_ITTER
+        ret = ret/size(samples,2)
 
     end function
 
-    ! Make a trial metropolis move on x
-    subroutine metro(x, basis, coefficients)
+    ! Get a set of samples using the metropolis algorithm
+    subroutine metro(samples, basis, coefficients)
     implicit none
-        real(prec) :: x(3), newX(3) , dx(3), r, theeta, phi
+        real(prec) :: newX(3), r, theeta, phi
+        real(prec), allocatable :: x(:), dx(:)
         class(basisState) :: basis(:)
         complex(prec)     :: coefficients(:)
+        real(prec) :: samples(:,:)
+        integer    :: i
 
-        ! Move some distance r in any direction
-        theeta = rand()*pi
-        phi    = rand()*2*pi
-        r      = rand()*angstrom/10
+        ! Number of metropolis steps to take and discard
+        ! to remove dependance on initial position
+        integer, parameter :: INIT_STEPS = 1000
 
-        dx(1) = r*sin(theeta)*cos(phi)
-        dx(2) = r*sin(theeta)*sin(phi)
-        dx(3) = r*cos(theeta)
+        ! Initial position is 0
+        allocate(x(size(samples,1)))
+        allocate(dx(size(samples,1)))
+        x = 0
 
-        newX = x + dx
-        if (rand() < abs(wavefunction(basis,coefficients,newX))**2 / & 
-                     abs(wavefunction(basis,coefficients,x))**2) then
-            x = newX ! Accept the move via metropolis criteria
-        endif
+        do i=1,size(samples,2)+INIT_STEPS
 
-        ! Ensure x doesn't get too close to a divergent origin
-        if (norm2(x) < minR) then
-            x(1) = minR
-        endif
+            ! Move some distance r in any direction
+            theeta = rand()*pi
+            phi    = rand()*2*pi
+            r      = rand()*angstrom/10
+
+            dx(1) = r*sin(theeta)*cos(phi)
+            dx(2) = r*sin(theeta)*sin(phi)
+            dx(3) = r*cos(theeta)
+
+            newX = x + dx
+            if (rand() < abs(wavefunction(basis,coefficients,newX))**2 / & 
+                        abs(wavefunction(basis,coefficients,x))**2) then
+                x = newX ! Accept the move via metropolis criteria
+            endif
+
+            ! Ensure x doesn't get too close to a divergent origin
+            if (norm2(x) < minR) then
+                x(1) = minR
+            endif
+
+            if (i>INIT_STEPS) samples(:,i-INIT_STEPS) = x
+        enddo
     end subroutine
 
 end module vqmc
