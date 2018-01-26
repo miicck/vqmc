@@ -31,4 +31,6 @@ for d in range(0,len(datas)):
 for d in range(0,len(xss)):
     plt.plot(xss[d],yss[d])
 #plt.ylim(-3,10)
+#plt.xlabel("c1 = 1-c2")
+#plt.ylabel("Energy (eV)")
 plt.show()

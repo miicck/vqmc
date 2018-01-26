@@ -1,22 +1,19 @@
 program main
 use vqmc
-!use particleInBox, only: wavefunction=>groundState, potential
-use hydrogenicSystem, only: wavefunction=>groundState, potential 
 use atomicBasis
 implicit none
-    real(prec) :: start, end, x(3)
+    type(atomicState), allocatable :: basis(:)
 
-    open(unit=2,file="toPlot")
-    call debugRadialPart(2)
+    allocate(basis(2))
+    basis(1) = atomicState(1,0,0,1) ! A hydrogenic 1s state (n=1,l=0,m=0,z=1)
+    basis(2) = atomicState(2,0,0,1) ! A hydrogenic 2s state (n=2,l=0,m=0,z=1)
 
-    open(unit=3,file="toPlot2D")
-    call debugWavefunctions(3)
+    call optimizeBasis(basis, potential)
+contains
 
-    ! Calculate the ground state energy using vqmc
-    call cpu_time(start)
-    print *, "Calculated system energy (eV):", energy(wavefunction, potential)/electronVolt
-    call cpu_time(end)
-    print *, "Monte-carlo itterations:", MC_ITTER  
-    print *, "Elapsed time:           ", end-start
+    function potential(x)
+    real(prec) :: potential, x(3)
+        potential = -qElectron**2/(4*pi*epsNaught*norm2(x))
+    end function
 
 end program main

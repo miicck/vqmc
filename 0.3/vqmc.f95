@@ -40,23 +40,126 @@ implicit none
 
 contains
 
-    ! Optimize the coefficeints in the given basis to
+    ! Optimize the coefficients in the given basis to
     ! minimize the energy in the given potential
     subroutine optimizeBasis(basis, potential)
     implicit none
+        class(basisState)          :: basis(:)
+        procedure(real(prec))      :: potential
+        complex(prec), allocatable :: coefficients(:)
+        complex(prec)              :: lowestEnergy, currentEnergy
+        real(prec)                 :: inf
+        integer                    :: i, c
+
+        ! Initialize our best energy to infinity
+        ! and allocate space for our coefficients
+        lowestEnergy = huge(inf)
+        allocate(coefficients(size(basis)))
+
+        ! Run optimization cycles
+        c = 0
+        do while(.true.)
+            c = c + 1
+            
+            call randomizeCoefficients(coefficients)
+
+            ! Calculate energy with new coefficients
+            print *, ""
+            print *, ""
+            print *, "Optimization cycle: ", c
+            currentEnergy = energy(basis, coefficients, potential)
+
+            if (realpart(currentEnergy) < realpart(lowestEnergy)) then
+
+                ! Improved ground state estimate
+                lowestEnergy = currentEnergy
+                print *, "Decreased energy to: ", lowestEnergy/electronVolt
+                do i=1,size(basis)
+                    print *, "    Coefficient: ", i, ":", coefficients(i)
+                enddo
+
+            else
+
+                ! Didn't improve ground state estimate
+                print *, "Failed to decrease energy."
+
+            endif
+
+        enddo
+
+    end subroutine
+
+    subroutine randomizeCoefficients(coefficients)
+    implicit none
+        complex(prec) :: coefficients(:)
+        integer       :: i
+        do i=1,size(coefficients)
+            coefficients(i) = real(2*(rand()-0.5),kind=prec)
+        enddo
+    end subroutine
+
+    ! A wavefucntion in a given basis, with given
+    ! coefficients evaluated at x
+    function wavefunction(basis, coefficients, x) result(ret)
+    implicit none
+        class(basisState) :: basis(:)
+        complex(prec)     :: ret, coefficients(:)
+        real(prec)        :: x(3)
+        integer           :: i
+        if (size(basis) /= size(coefficients)) then
+            print *, "ERROR: Basis/Coefficients mismatch!"
+        endif
+        ret = 0
+        do i=1,size(basis)
+            ret = ret + coefficients(i)*basis(i)%value(x)
+        enddo
+    end function
+
+    ! Calculate the second derivative of the wavefunction
+    ! in the given direction using finite differences
+    function secondDerivative(basis, coefficients, x, dir)
+        class(basisState) :: basis(:)
+        complex(prec)     :: secondDerivative, coefficients(:)
+        real(prec)        :: x(3), dir(3)
+        real(prec), parameter :: eps = 0.00001 * angstrom
+        dir = eps * dir/norm2(dir)
+        secondDerivative = wavefunction(basis, coefficients, x+dir) - &
+                           2*wavefunction(basis, coefficients, x) + &
+                           wavefunction(basis, coefficients, x-dir)
+        secondDerivative = secondDerivative / (eps**2)
+    end function
+
+    ! Calculate psi^-1(x) T psi(x)
+    function localKineticEnergy(basis, coefficients, x)
+        class(basisState) :: basis(:)
+        real(prec)        :: x(3)
+        complex(prec)     :: dx, dy, dz, localKineticEnergy, coefficients(:)
+        dx = secondDerivative(basis, coefficients, x, real((/1,0,0/), kind=prec))
+        dy = secondDerivative(basis, coefficients, x, real((/0,1,0/), kind=prec))
+        dz = secondDerivative(basis, coefficients, x, real((/0,0,1/), kind=prec))
+        localKineticEnergy = -(hbar**2/(2*mElectron))*(dx + dy + dz)
+        localKineticEnergy = localKineticEnergy/wavefunction(basis, coefficients, x)
+    end function
+
+    ! Calculate the local energy of the given wavefunction
+    ! with the given potential at x
+    function localEnergy(basis, coefficients, potential, x)
+    implicit none
         class(basisState)     :: basis(:)
         procedure(real(prec)) :: potential
-        ! TODO
-    end subroutine
+        complex(prec)         :: localEnergy, coefficients(:)      
+        real(prec) :: x(3)
+        localEnergy = localKineticEnergy(basis, coefficients, x) + potential(x)
+    end function
 
     ! Carry out a monte carlo integration of the local energy of the
     ! wavefunction in the given potential, using importance sampling
     ! of the wavefunction
-    function energy(wavefunction, potential) result(ret)
+    function energy(basis, coefficients, potential) result(ret)
     implicit none
         procedure(real(prec)) :: potential
-        procedure(wvfn)       :: wavefunction
-        complex(prec)         :: ret
+        class(basisState)     :: basis(:)
+        complex(prec)         :: ret, coefficients(:)
         real(prec) :: x(3)
         integer    :: i
 
@@ -67,58 +170,24 @@ contains
         ! by carring out MC_INIT_STEPS trial moves and
         ! ignoring them
         do i=1,MC_INIT_STEPS
-            call metro(x,wavefunction)
+            call metro(x, basis, coefficients)
         enddo
 
         ! Actually sample
         do i=1, MC_ITTER
-            call metro(x, wavefunction)
-            ret = ret + localEnergy(wavefunction, potential, x)
+            call metro(x, basis, coefficients)
+            ret = ret + localEnergy(basis, coefficients, potential, x)
         enddo
         ret = ret/MC_ITTER
 
     end function
 
-    ! Calculate the second derivative of the wavefunction
-    ! in the given direction using finite differences
-    function secondDerivative(wavefunction, x, dir)
-        procedure(wvfn) :: wavefunction
-        complex(prec)   :: secondDerivative
-        real(prec)      :: x(3), dir(3)
-        real(prec), parameter :: eps = 0.00001 * angstrom
-        dir = eps * dir/norm2(dir)
-        secondDerivative = wavefunction(x+dir) - 2*wavefunction(x) + wavefunction(x-dir)
-        secondDerivative = secondDerivative / (eps**2)
-    end function
-
-    ! Calculate psi^-1(x) T psi(x)
-    function localKineticEnergy(wavefunction, x)
-        procedure(wvfn) :: wavefunction
-        real(prec)      :: x(3)
-        complex(prec)   :: dx, dy, dz, localKineticEnergy
-        dx = secondDerivative(wavefunction,x,real((/1,0,0/),kind=prec))
-        dy = secondDerivative(wavefunction,x,real((/0,1,0/),kind=prec))
-        dz = secondDerivative(wavefunction,x,real((/0,0,1/),kind=prec))
-        localKineticEnergy = -(hbar**2/(2*mElectron))*(dx + dy + dz)
-        localKineticEnergy = localKineticEnergy/wavefunction(x)
-    end function
-
-    ! Calculate the local energy of the given wavefunction
-    ! with the given potential at x
-    function localEnergy(wavefunction, potential, x)
-    implicit none
-        procedure(wvfn) :: wavefunction
-        procedure(real(prec)) :: potential
-        complex(prec)         :: localEnergy        
-        real(prec) :: x(3)
-        localEnergy = localKineticEnergy(wavefunction,x) + potential(x)
-    end function
-
     ! Make a trial metropolis move on x
-    subroutine metro(x, wavefunction)
+    subroutine metro(x, basis, coefficients)
     implicit none
         real(prec) :: x(3), newX(3) , dx(3), r, theeta, phi
-        procedure (wvfn) :: wavefunction
+        class(basisState) :: basis(:)
+        complex(prec)     :: coefficients(:)
 
         ! Move some distance r in any direction
         theeta = rand()*pi
@@ -130,8 +199,8 @@ contains
         dx(3) = r*cos(theeta)
 
         newX = x + dx
-        if (rand() < abs(wavefunction(newX))**2 / & 
-                     abs(wavefunction(x))**2) then
+        if (rand() < abs(wavefunction(basis,coefficients,newX))**2 / & 
+                     abs(wavefunction(basis,coefficients,x))**2) then
             x = newX ! Accept the move via metropolis criteria
         endif
 
