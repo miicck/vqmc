@@ -9,6 +9,7 @@ implicit none
         integer :: n, l, m, z
     contains
         procedure :: value
+        procedure :: printDebugInfo
     end type
 
     interface atomicState
@@ -25,6 +26,13 @@ contains
     real(prec)    :: x(3)
         value = atomicWavefunction(this%n,this%l,this%m,this%z,x)
     end function
+
+    ! Implementation of the debug print subroutine for atomic states
+    subroutine printDebugInfo(this)
+    implicit none
+    class(atomicState) :: this
+        print *, this%n , this%l, this%m, this%z
+    end subroutine
 
     ! Atomic state constructor
     function constructor(n, l, m, z) result(this)

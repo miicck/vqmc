@@ -15,6 +15,7 @@ implicit none
     type, abstract :: basisState
     contains
         procedure(basisWfn), deferred :: value
+        procedure(printStateDebug), deferred :: printDebugInfo
     end type
 
     abstract interface
@@ -32,6 +33,13 @@ implicit none
             real(prec)    :: x(3)
             complex(prec) :: basisWfn
         end function
+
+        ! Interface for print statements
+        subroutine printStateDebug(this)
+            import
+            class(basisState) :: this
+        end subroutine
+
     end interface
 
 contains
@@ -44,7 +52,7 @@ contains
         procedure(real(prec))      :: potential
         complex(prec), allocatable :: coefficients(:), designMatrix(:,:), dTd(:,:)
         integer                    :: i, n, m
-        real(prec)                 :: samples(3,100), varE
+        real(prec)                 :: samples(3,10), varE
         complex(prec), parameter   :: oneCplx = 1 ! FORTRAN
 
         ! Allocate space for our coefficients
@@ -65,6 +73,7 @@ contains
         varE = energy(basis, coefficients, potential, samples)
         
         ! Calculate the entries of our design matrix
+        print *, "singleBASIS"
         do n=1,size(basis)
             do m=1,size(samples,2)
                 designMatrix(m,n) = &
@@ -76,8 +85,8 @@ contains
 
         ! Calculate D^T*D, our least squares projection matrix
         dTd = matmul(transpose(designMatrix), designMatrix)
-        call potrf(dTd)
-        call potri(dTd)
+        !call potrf(dTd)
+        !call potri(dTd)
 
         ! Print the energy with the given coefficients etc..
         print *, energy(basis, coefficients, potential, samples)/electronVolt
@@ -144,6 +153,7 @@ contains
         procedure(real(prec)) :: potential
         complex(prec)         :: localEnergy, coefficients(:)      
         real(prec) :: x(3)
+        call basis(1)%printDebugInfo()
         localEnergy = localKineticEnergy(basis, coefficients, x) + potential(x)
     end function
 
