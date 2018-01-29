@@ -5,6 +5,7 @@
 ! Module that carries out the monte-carlo integration
 module vqmc
 use constants
+!use IFPORT
 implicit none
 
     ! The minimum distance from the divergent origin
@@ -42,6 +43,14 @@ implicit none
 
     end interface
 
+    interface
+        ! A potential
+        function pot(x)
+            import
+            real(prec) :: x(3), pot
+        end function
+    end interface
+
 contains
 
     ! Optimize the coefficients in the given basis to
@@ -49,7 +58,7 @@ contains
     subroutine optimizeBasis(basis, potential)
     implicit none
         class(basisState)          :: basis(:)
-        procedure(real(prec))      :: potential
+        procedure(pot)             :: potential
         complex(prec), allocatable :: coefficients(:), designMatrix(:,:), dTd(:,:)
         integer                    :: i, n, m
         real(prec)                 :: samples(3,10), varE
@@ -71,6 +80,7 @@ contains
 
         ! Calculate our variational energy <E_L>
         varE = energy(basis, coefficients, potential, samples)
+        print *, "Variational energy: ", varE/electronVolt
         
         ! Calculate the entries of our design matrix
         print *, "singleBASIS"
@@ -87,9 +97,6 @@ contains
         dTd = matmul(transpose(designMatrix), designMatrix)
         !call potrf(dTd)
         !call potri(dTd)
-
-        ! Print the energy with the given coefficients etc..
-        print *, energy(basis, coefficients, potential, samples)/electronVolt
 
     end subroutine
 
@@ -149,9 +156,9 @@ contains
     ! with the given potential at x
     function localEnergy(basis, coefficients, potential, x)
     implicit none
-        class(basisState)     :: basis(:)
-        procedure(real(prec)) :: potential
-        complex(prec)         :: localEnergy, coefficients(:)      
+        class(basisState) :: basis(:)
+        procedure(pot)    :: potential
+        complex(prec)     :: localEnergy, coefficients(:)      
         real(prec) :: x(3)
         call basis(1)%printDebugInfo()
         localEnergy = localKineticEnergy(basis, coefficients, x) + potential(x)
@@ -162,9 +169,9 @@ contains
     ! provided
     function energy(basis, coefficients, potential, samples) result(ret)
     implicit none
-        procedure(real(prec)) :: potential
-        class(basisState)     :: basis(:)
-        complex(prec)         :: ret, coefficients(:)
+        procedure(pot)    :: potential
+        class(basisState) :: basis(:)
+        complex(prec)     :: ret, coefficients(:)
         real(prec) :: samples(:,:)
         integer    :: i
 

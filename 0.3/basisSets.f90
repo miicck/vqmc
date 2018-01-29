@@ -118,7 +118,7 @@ contains
     integer    :: l, m
     real(prec) :: theeta, phi
     complex(prec)    :: ret
-        ret = exp(complex(0,1)*m*phi)
+        ret = exp((0,1)*m*phi)
         ret = ret * associatedLegendrePolynomial(l,m,cos(theeta))      
     end function
 
