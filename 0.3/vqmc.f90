@@ -71,6 +71,9 @@ contains
             coefficients(i) = 1
         enddo
 
+        ! About to delete the below and implement a simpler, steepest
+        ! decent optimizer
+
         ! Allocate our matricies for least-squares
         allocate(designMatrix(size(basis),size(samples,2)))
         allocate(dTd(size(basis),size(basis)))
