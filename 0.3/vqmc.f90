@@ -59,57 +59,118 @@ contains
     implicit none
         class(basisState)          :: basis(:)
         procedure(pot)             :: potential
-        complex(prec), allocatable :: coefficients(:), designMatrix(:,:), dTd(:,:)
+        complex(prec), allocatable :: coefficients(:), newCoefficients(:)
+        real(prec),    allocatable :: gradReal(:), gradImag(:)
+        real(prec),    parameter   :: eps = 0.0001
+        real(prec)                 :: samples(3,10000), shunt, itterVar, newVar, workVar
+        complex(prec)              :: itterEnergy, workE
         integer                    :: i, n, m
-        real(prec)                 :: samples(3,10), varE
-        complex(prec), parameter   :: oneCplx = 1 ! FORTRAN
 
-        ! Allocate space for our coefficients
-        ! initialize them all to 1
+        ! Allocate space
         allocate(coefficients(size(basis)))
+        allocate(newCoefficients(size(basis)))
+        allocate(gradReal(size(basis)))
+        allocate(gradImag(size(basis)))
+
         do i=1,size(basis)
-            coefficients(i) = 1
+            coefficients(i) = (1,1)
         enddo
 
-        ! About to delete the below and implement a simpler, steepest
-        ! decent optimizer
+        shunt = 0.1
 
-        ! Allocate our matricies for least-squares
-        allocate(designMatrix(size(basis),size(samples,2)))
-        allocate(dTd(size(basis),size(basis)))
+        do n=1,100
 
-        ! Get a set of samples using the metropolis algorithm
-        call metro(samples, basis, coefficients)
+            ! Generate samples in coordinate space using
+            ! the metropolis algorithm for the current
+            ! trial wavefunction
+            call metro(samples, basis, coefficients)        
+                
+            ! Calculate the energetics with the current coefficients
+            call energetics(basis, coefficients, potential, samples, itterEnergy, itterVar)
+            
+            ! Calculate the real and imaginary coefficient
+            ! gradients of the real part of the energy variance
+            do i=1,size(basis)
 
-        ! Calculate our variational energy <E_L>
-        varE = energy(basis, coefficients, potential, samples)
-        print *, "Variational energy: ", varE/electronVolt
-        
-        ! Calculate the entries of our design matrix
-        print *, "singleBASIS"
-        do n=1,size(basis)
-            do m=1,size(samples,2)
-                designMatrix(m,n) = &
-                    localEnergy(basis((/n/)), (/oneCplx/), &
-                    potential, samples(:,m)) / &
-                    wavefunction(basis,coefficients,samples(:,m))
+                ! Real gradients
+                coefficients(i) = coefficients(i) + (eps, 0)
+                call energetics(basis, coefficients, potential, samples, workE, workVar)
+                gradReal(i) = (workVar-itterVar) / eps
+                coefficients(i) = coefficients(i) - (eps, 0)
+
+                ! Imaginary gradients
+                coefficients(i) = coefficients(i) + (0, eps)
+                call energetics(basis, coefficients, potential, samples, workE, workVar)
+                gradImag(i) = (workVar-itterVar) / eps
+                coefficients(i) = coefficients(i) - (0, eps)
+
             enddo
-        enddo
 
-        ! Calculate D^T*D, our least squares projection matrix
-        dTd = matmul(transpose(designMatrix), designMatrix)
-        !call potrf(dTd)
-        !call potri(dTd)
+            ! Shunt the coefficients closer to the minimum
+            ! by about the size of the minimum coefficient
+            call makeOrderUnityReal(gradReal)
+            call makeOrderUnityReal(gradImag)
+            shunt = minimumModulus(coefficients)*0.5
+            gradReal = gradReal * shunt
+            gradImag = gradImag * shunt
+
+            ! Move along steepest decent
+            newCoefficients = coefficients - gradReal - gradImag*(0,1)
+            call makeOrderUnityComplex(newCoefficients)
+            call energetics(basis, newCoefficients, potential, samples, workE, newVar)
+
+            ! Accept the new coefficients if they reduced the variance
+            if (newVar < itterVar) coefficients = newCoefficients
+
+            print *, ""
+            print *, ""
+            print *, ""
+            print *, "Itteration:", n
+            print *, "    Energy:  ", itterEnergy/electronVolt, "eV"
+            print *, "    Variance:", min(newVar, itterVar)/(electronVolt**2)
+            do m=1, size(basis)
+                print *, "    Basis", m, "character", abs(coefficients(m))
+            enddo
+
+        enddo
 
     end subroutine
 
-    subroutine randomizeCoefficients(coefficients)
+    ! Get the minimum modulus of a set of complex numbers
+    function minimumModulus(set) result(min)
     implicit none
-        complex(prec) :: coefficients(:)
-        integer       :: i
-        do i=1,size(coefficients)
-            coefficients(i) = real(2*(rand()-0.5),kind=prec)
+        complex(prec) :: set(:)
+        real(prec) :: min
+        integer    :: i
+        min = huge(min)
+        do i=1,size(set)
+            if (abs(set(i))<min) min = abs(set(i))
         enddo
+    end function
+
+    ! Make the values in a set O(1)
+    subroutine makeOrderUnityReal(set)
+    implicit none
+        real(prec) :: set(:), max
+        integer    :: i
+        max = 0
+        do i=1,size(set)
+            if (abs(set(i))>max) max = abs(set(i))
+        enddo
+        set = set / max
+    end subroutine
+
+    ! Make the values in a set O(1)
+    subroutine makeOrderUnityComplex(set)
+    implicit none
+        complex(prec) :: set(:)
+        real(prec)    :: max
+        integer       :: i
+        max = 0
+        do i=1,size(set)
+            if (abs(set(i))>max) max = abs(set(i))
+        enddo
+        set = set / max
     end subroutine
 
     ! A wavefucntion in a given basis, with given
@@ -163,28 +224,39 @@ contains
         procedure(pot)    :: potential
         complex(prec)     :: localEnergy, coefficients(:)      
         real(prec) :: x(3)
-        call basis(1)%printDebugInfo()
         localEnergy = localKineticEnergy(basis, coefficients, x) + potential(x)
     end function
 
     ! Carry out a monte carlo integration of the local energy of the
     ! wavefunction in the given potential, using the sample positions
     ! provided
-    function energy(basis, coefficients, potential, samples) result(ret)
+    subroutine energetics(basis, coefficients, potential, samples, energy, variance)
     implicit none
-        procedure(pot)    :: potential
-        class(basisState) :: basis(:)
-        complex(prec)     :: ret, coefficients(:)
-        real(prec) :: samples(:,:)
-        integer    :: i
+        procedure(pot)             :: potential
+        class(basisState)          :: basis(:)
+        complex(prec)              :: energy, coefficients(:)
+        complex(prec), allocatable :: localEnergies(:)
+        real(prec)                 :: samples(:,:), variance
+        integer                    :: i
 
-        ret = 0
-        do i=1, size(samples,2)
-            ret = ret + localEnergy(basis, coefficients, potential, samples(:,i))
+        allocate(localEnergies(size(samples,2)))
+
+        ! Calculate the average local energy of our samples
+        energy = 0
+        do i=1, size(localEnergies)
+            localEnergies(i) = localEnergy(basis, coefficients, potential, samples(:,i))
+            energy = energy + localEnergies(i)
         enddo
-        ret = ret/size(samples,2)
+        energy = energy/size(localEnergies)
 
-    end function
+        ! Calculate the local energy variance of our samples
+        variance = 0
+        do i=1, size(localEnergies)
+            variance = variance + realpart(localEnergies(i)-energy)**2
+        enddo
+        variance = variance/size(localEnergies)
+
+    end subroutine
 
     ! Get a set of samples using the metropolis algorithm
     subroutine metro(samples, basis, coefficients)
