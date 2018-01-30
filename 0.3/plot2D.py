@@ -1,6 +1,7 @@
 import matplotlib.pyplot as plt
+import sys
 
-file = open("toPlot2D")
+file = open(sys.argv[1])
 data = file.read()
 lines = data.split('\n')
 

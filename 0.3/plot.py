@@ -1,5 +1,6 @@
 import matplotlib.pyplot as plt
-file = open("toPlot")
+import sys
+file = open(sys.argv[1])
 allData = file.read()
 datas = allData.split('#')
 
