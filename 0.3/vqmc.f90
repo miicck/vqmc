@@ -10,7 +10,7 @@ implicit none
 
     ! Parameters controlling our vqmc simulation
     
-    integer,    parameter :: metroSamples = 100000     ! The number of metropolis electron configurations that are used
+    integer,    parameter :: metroSamples = 10000000   ! The number of metropolis electron configurations that are used
     real(prec), parameter :: minR = angstrom/10000     ! The minimum distance e's are alowed from nucleii
     real(prec), parameter :: maxMetroJump = 4*angstrom ! The maximum distance an electron can move in a metropolis trial move
 
@@ -59,34 +59,101 @@ contains
     ! minimize the energy in the given potential
     subroutine optimizeBasis(basis, potential)
     implicit none
-        class(basisState)          :: basis(:)
-        procedure(pot)             :: potential
-        complex(prec), allocatable :: coefficients(:), newCoefficients(:)
-        real(prec),    allocatable :: gradReal(:), gradImag(:)
-        real(prec),    parameter   :: eps = 0.1
-        real(prec)                 :: samples(3,metroSamples), shunt, itterVar, newVar, workVar
-        complex(prec)              :: itterEnergy, workE
-        integer                    :: i, n, m
-        logical                    :: energyDecrease
+    class(basisState) :: basis(:)
+    procedure(pot)    :: potential
+    real(prec)        :: randCoeffChange
+    complex(prec), allocatable :: coefficients(:)
+
+        allocate(coefficients(size(basis)))
+
+        call optimizeBasisRandomSearch(basis, coefficients, potential, 50, randCoeffChange)
+        call optimizeBasisSteepestDecent(basis, coefficients, potential, 100, randCoeffChange)
+        call sampleWavefunctionToFile(basis, coefficients)
+
+    end subroutine
+
+    ! Optimize the coefficients of our basis using a random search
+    ! of coefficient space. lastCoeffChange will contain the amount
+    ! that |coefficients| changed at the last step in energy (useful
+    ! to know for further optimization)
+    subroutine optimizeBasisRandomSearch(basis, coefficients, potential, itterations, lastCoeffChange)
+    implicit none
+    class(basisState)          :: basis(:)
+    procedure(pot)             :: potential
+    complex(prec), allocatable :: newCoefficients(:)
+    real(prec)                 :: samples(3,metroSamples), workVar, lastCoeffChange
+    complex(prec)              :: workE, minEnergy, coefficients(:)
+    integer                    :: i, n, itterations
+    real(prec), parameter      :: relaxation = 0
 
         ! Allocate space
-        allocate(coefficients(size(basis)))
+        allocate(newCoefficients(size(basis)))
+        do i=1,size(basis)
+            newCoefficients(i) = 1
+        enddo
+
+        open(unit=1,file="randomOptimizationEnergy")
+        open(unit=2,file="randomOptimizationBasis1Char")
+        open(unit=3,file="randomOptimizationBasis2Char")
+
+        ! Initialize coefficients to the lowest energy
+        ! of a random set of coefficients
+        print *, "Initializing basis..."
+        minEnergy = huge(workVar)
+        do n=1,itterations
+            do i=1,size(basis)
+                coefficients(i) = rand()*(1-relaxation) + newCoefficients(i)*relaxation
+            enddo
+            call normalizeCoefficients(coefficients)
+            call metro(samples, basis, coefficients)  
+            call energetics(basis, coefficients, potential, samples, workE, workVar)
+            if (realpart(workE)<realpart(minEnergy)) then
+                minEnergy = realpart(workE)
+                lastCoeffChange = norm2(abs(newCoefficients-coefficients))
+                newCoefficients = coefficients
+            endif
+            print *, "    Itteration", n, "of", itterations, "energy:", realpart(minEnergy)/electronVolt, "eV"
+            write(1,*) n,",", realpart(minEnergy)/electronVolt
+            write(2,*) n,",", abs(newCoefficients(1))**2
+            write(3,*) n,",", abs(newCoefficients(2))**2
+        enddo
+        coefficients = newCoefficients
+
+        close(unit=1)
+        close(unit=2)
+        close(unit=3)
+    end subroutine
+
+    ! Optimize the basis using a steepest decent method, initially modifying
+    ! coefficients by +/- startingShunt, then reducing the shunts to narrow
+    ! in on the optimal set
+    subroutine optimizeBasisSteepestDecent(basis, coefficients, potential, itterations, startingShunt)
+    implicit none
+    class(basisState)          :: basis(:)
+    procedure(pot)             :: potential
+    complex(prec), allocatable :: newCoefficients(:)
+    real(prec),    allocatable :: gradReal(:), gradImag(:)
+    real(prec),    parameter   :: eps = 0.001
+    real(prec)                 :: samples(3,metroSamples), shunt, itterVar, newVar, workVar, startingShunt
+    complex(prec)              :: itterEnergy, workE, coefficients(:)
+    integer                    :: i, n, m, itterations
+    logical                    :: energyDecrease
+
+        ! TODO - remove unnecassary calls to energetics(), should use results
+        ! of previous itteration to calculate gradients
+
+        ! Allocate space
         allocate(newCoefficients(size(basis)))
         allocate(gradReal(size(basis)))
         allocate(gradImag(size(basis)))
 
-        do i=1,size(basis)
-            coefficients(i) = 0.8
-        enddo
-        coefficients(2) = 0.2
+        open(unit=1,file="steepestDecentOptimizationEnergy")
+        open(unit=2,file="steepestDecentOptimizationBasis1Char")
+        open(unit=3,file="steepestDecentOptimizationBasis2Char")
 
-        open(unit=1,file="optimizationEnergy")
-        open(unit=2,file="optimizationBasis1Char")
-        open(unit=3,file="optimizationBasis2Char")
-
-        shunt = 0.01
+        shunt = startingShunt
         
-        do n=1,100
+        do n=1,itterations
 
             call normalizeCoefficients(coefficients) ! Normalize our starting coefficients
             newCoefficients = coefficients ! Reset working set used to calculate gradients
@@ -94,7 +161,7 @@ contains
             ! Generate samples in coordinate space using
             ! the metropolis algorithm for the current
             ! trial wavefunction
-            call metro(samples, basis, coefficients)        
+            call metro(samples, basis, coefficients)    
                 
             ! Calculate the energetics with the current coefficients
             call energetics(basis, coefficients, potential, samples, itterEnergy, itterVar)           
@@ -108,7 +175,7 @@ contains
                 call energetics(basis, newCoefficients, potential, samples, workE, workVar)
                 gradReal(i) = realpart(workE-itterEnergy) / eps
                 newCoefficients(i) = coefficients(i) ! Reset
-                             
+                            
                 ! Imaginary gradients
                 newCoefficients(i) = coefficients(i) + (0, eps)               
                 call energetics(basis, newCoefficients, potential, samples, workE, workVar)
@@ -134,6 +201,7 @@ contains
                 coefficients = newCoefficients
             else
                 energyDecrease = .false.
+                shunt = shunt * 0.5 ! Reduce the coefficient shunt, to search more finely
             endif
 
             write(1,*) n,",", min(realpart(workE),realpart(itterEnergy))/electronVolt
@@ -143,7 +211,7 @@ contains
             print *, ""
             print *, ""
             print *, ""
-            print *, "Basis opimization"
+            print *, "Steepest decent basis opimization"
             print *, "Itteration:", n
             print *, "Energy decrease:", energyDecrease
             print *, "    Energy:  ", realpart(itterEnergy)/electronVolt, "eV"
@@ -161,6 +229,10 @@ contains
 
         enddo
 
+        close(unit=1)
+        close(unit=2)
+        close(unit=3)
+        
     end subroutine
 
     ! Get data for plots of quantities vs basis character
@@ -204,7 +276,7 @@ contains
         print *, "Sampling wavefunction to file..."
         call metro(samples,basis,coefficients)
         do i=1,size(samples,2)
-            write(1,*) samples(1,i), ",", samples(3,i)
+            write(1,*) samples(1,i)/angstrom, ",", samples(3,i)/angstrom
         enddo
         close(unit=1)
     end subroutine

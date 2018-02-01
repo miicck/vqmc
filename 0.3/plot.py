@@ -34,4 +34,5 @@ for d in range(0,len(xss)):
 #plt.ylim(-3,10)
 #plt.xlabel("c1 = 1-c2")
 #plt.ylabel("Energy (eV)")
+plt.axes().set_aspect('equal', 'datalim')
 plt.show()

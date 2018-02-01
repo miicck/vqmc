@@ -135,27 +135,26 @@ contains
     end function
 
     ! Log wavefunctions for debugging
-    subroutine debugWavefunctions(unit)
+    subroutine debugAtomicState(state)
     implicit none
-    integer    :: unit, xi, yi, n, l, m
+    class(atomicState) :: state
+    integer    :: xi, yi
     integer, parameter :: grid = 100
     real(prec) :: r(3), a
-    complex(prec)    :: w
-        r = 0
-        n = 6
-        l = 2
-        m = 2
+        print *, "Debugging atomic state: "
+        call state%printDebugInfo()
+        open(unit=1,file="wavefunctionDebug")
         do xi=-grid,grid
             do yi=-grid,grid
-                r(1) = 5*n*angstrom*xi/real(grid)
-                r(3) = 5*n*angstrom*yi/real(grid)
-                w = atomicWavefunction(n,l,m,1,r)
-                a = abs(w)**2
+                r(1) = 5*state%n*angstrom*xi/real(grid)
+                r(3) = 5*state%n*angstrom*yi/real(grid)
+                a = abs(state%value(r))**2
                 if (.not. isnan(a)) then
-                    write(unit,*) r(1),",",r(3),",",a
+                    write(1,*) r(1)/angstrom,",",r(3)/angstrom,",",a
                 endif
             enddo
         enddo
+        close(unit=1)
     end subroutine
 
     ! Log the radial parts for debugging
