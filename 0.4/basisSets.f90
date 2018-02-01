@@ -128,8 +128,16 @@ contains
     integer    :: n, l, m, z
     real(prec) :: x(3), theeta, phi
     complex(prec)    :: ret
-        phi = atan(x(2)/x(1))
-        theeta = acos(x(3)/norm2(x))
+        if (x(1)>0) then
+            phi = atan(x(2)/x(1))
+        else
+            phi = pi/2
+        endif
+        if (norm2(x)>0) then
+            theeta = acos(x(3)/norm2(x))
+        else
+            theeta = 0
+        endif
         ret = sphericalHarmonic(l, m, theeta, phi)
         ret = ret*radialPart(n, l, norm2(x), z)        
     end function

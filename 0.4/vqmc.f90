@@ -9,10 +9,10 @@ use constants
 implicit none
 
     ! Parameters controlling our vqmc simulation
-    
     integer,    parameter :: metroSamples = 10000      ! The number of metropolis electron configurations that are used
     real(prec), parameter :: minR = angstrom/10000     ! The minimum distance e's are alowed from nucleii
     real(prec), parameter :: maxMetroJump = 4*angstrom ! The maximum distance an electron can move in a metropolis trial move
+    integer, parameter    :: metroInit = 1000          ! Number of metropolis steps to take and discard to remove dependance on initial position
 
     ! An object that can be used as a basis function
     type, abstract :: basisState
@@ -373,6 +373,251 @@ contains
         enddo
     end function
 
+    ! Calculate the energetics of the slater determinant defined by the given
+    ! single particle basis in the given potential using monte carlo integration
+    subroutine energeticsSlater(singleParticleBasis, potential, numConfigs, energy)
+    implicit none
+        class(basisState)       :: singleParticleBasis(:)
+        procedure(pot)          :: potential
+        real(prec), allocatable :: configs(:,:,:)
+        real(prec)              :: dr(3)
+        complex(prec)           :: energy
+        integer                 :: i, j, i2, j2, numConfigs, N
+        
+        configs = metroSlater(singleParticleBasis, numConfigs)
+        energy = 0
+        N = size(singleParticleBasis) ! # of electrons = # single particle states in S.D
+
+        do i=1,size(configs, 3) ! i <=> configs
+
+            ! Sum the electron - nuclear interactions
+            do j=1,N ! j <=> electrons
+                energy = energy + potential(configs(:,j,i))
+            enddo
+
+            ! Sum the electron - electron interactions
+            do i2=1,N-1
+                do j2=i2+1,N
+                    print *, i2, j2
+                    ! i2, j2 <=> electron pair
+                    dr = configs(:,i2,i) - configs(:,j2,i)
+                    energy = energy + qElectron**2/(4*pi*epsNaught*norm2(dr))
+                enddo
+            enddo
+
+            ! TODO add electron kinetic energies
+    
+        enddo
+
+    end subroutine
+
+    ! Sample n electron configurations from a slater determinant
+    ! constructed from the given basis states
+    function metroSlater(singleParticleBasis, n)
+    implicit none
+        class(basisState)       :: singleParticleBasis(:)
+        real(prec), allocatable :: metroSlater(:,:,:) ! # dim, # electrons, # samples
+        real(prec), allocatable :: config(:,:), newConfig(:,:)
+        integer                 :: n, M, i
+        real(prec)              :: oldProb, newProb
+
+        M = size(singleParticleBasis)
+        allocate(metroSlater(3,M,n))
+        allocate(config(3,M))
+        allocate(newConfig(3,M))
+        config = 0 ! Initial configuration is all electrons at the origin
+        
+        do i=1,n + metroInit
+            
+            ! Make a metropolis trial move
+            call random_number(newConfig)
+            newConfig = config + (2*newConfig-1)*angstrom*4
+            
+            ! Apply the metropolis rejection
+            oldProb = slaterDeterminant(singleParticleBasis, config)
+            newProb = slaterDeterminant(singleParticleBasis, newConfig)
+            if (newProb/oldProb > rand()) config = newConfig
+
+            ! Sample the current config if it's not an intitalization step
+            if (i>metroInit) metroSlater(:,:,i-metroInit) = config
+        enddo        
+    
+    end function
+
+    ! Test the metropolis algorithm as applied to slater determinants
+    ! using a 2-particle determinant. Outputs the differnce in x and
+    ! difference in z for the two electrons for each sample.
+    subroutine testMetroSlater(singleParticleBasis, n)
+    implicit none
+        class(basisState)       :: singleParticleBasis(2)
+        integer                 :: n, i
+        real(prec)              :: diff(3)
+        real(prec), allocatable :: configs(:,:,:)
+        
+        configs = metroSlater(singleParticleBasis, n)
+        open(unit=2,file="output/testMetroSlater")
+        
+        do i=1,size(configs,3)
+            diff = configs(:,1,i) - configs(:,2,i)
+            write (2,*) diff(1),",",diff(3)
+        enddo
+
+        close(unit=2)
+        
+    end subroutine
+
+    ! A slater determinant of the given single particle states, evaluated
+    ! at the given electron positions
+    function slaterDeterminant(singleParticleStates, electronPositions) result(ret)
+    implicit none
+        class(basisState)    :: singleParticleStates(:)
+        real(prec)           :: electronPositions(:,:)
+        complex(prec)        :: ret, prod
+        integer              :: M, i, j
+        integer, allocatable :: perm(:,:), sgn(:)
+
+        M = size(singleParticleStates)
+
+        if (size(electronPositions,1) /= 3) then
+            print *, "Error in calculating a slater determinant: Spatial dimension incorrect!"
+            ret = 0
+            return
+        endif
+
+        if (size(electronPositions,2) /= M) then
+            print *, "Error in calculating a slater determinant: # Electrons /= # Basis States!"
+        endif
+
+        ! Fill our permutation matrix and parity array
+        call permutations(M,perm,sgn)
+
+        ! Calculate ret = sum_{permutations} sign(permutation) product_i s_{i,permutation(i)}
+        ! where s is our slater matrix
+        ret = 0
+        do i=1,factorial(M) ! Sum over permutations
+            prod = 1
+            do j=1,M ! Product over entries of our slater matrix
+                prod = prod*singleParticleStates(j)%value(electronPositions(:,perm(i,j)))
+            enddo
+            ret = ret + sgn(i)*prod
+        enddo
+
+    end function
+
+    ! Output data for a plot of the abs(slater determinant)**2
+    ! against electron seperation for the two electron case
+    subroutine testSlaterDet(basis)
+    implicit none
+        class(basisState) :: basis(2)
+        real(prec)        :: ePos(3,2)
+        complex(prec)     :: w
+        integer           :: i, grid
+        
+        open(unit=2,file="output/testSlaterDet")
+        
+        ! Start electrons on top of one another at the origin
+        ePos = 0
+        
+        grid = 100
+        do i=0,grid
+            ePos(1,1) = 10*angstrom*i/real(grid) ! Move one electron away from origin
+            w = basis(1)%value(ePos(:,1))*basis(2)%value(ePos(:,2)) - &
+                basis(1)%value(ePos(:,2))*basis(2)%value(ePos(:,1))
+            write(2,*) epos(1,1)/angstrom, ",", abs(slaterDeterminant(basis, ePos)-w)**2
+        enddo
+
+        close(unit=2)
+
+    end subroutine
+    
+    ! A subroutine that generates the permutaions of a and
+    ! stores the result in the factorial(size(a)) x size(a)
+    ! matrix p. Uses Heap's algorithm. As an extension it
+    ! also stores the signs of the permutations in s
+    subroutine permutations(n, p, s)
+    implicit none
+        integer :: n, i, temp, currentRow, sgn
+        integer, allocatable :: a(:), c(:), p(:,:), s(:)
+        
+        allocate(a(n))
+        allocate(c(n))
+        allocate(p(factorial(n),n))
+        allocate(s(factorial(n)))
+
+        do i=1,size(a)
+            c(i) = 1
+            a(i) = i
+        enddo
+
+        p(1,:)     = a(:)
+        s(1)       = 1
+        currentRow = 2
+
+        i = 1
+        sgn = 1
+        do while(i < n+1)
+            if (c(i) < i) then
+                if (modulo(i,2)/=0) then
+                    ! Swap a(i), a(1)
+                    temp = a(i)
+                    a(i) = a(1)
+                    a(1) = temp
+                    sgn  = -sgn
+                else
+                    ! Swap a(c(i)), a(i)
+                    temp = a(i)
+                    a(i) = a(c(i))
+                    a(c(i)) = temp
+                    sgn  = -sgn
+                endif
+                
+                ! Generated a permutation
+                p(currentRow,:) = a(:)
+                s(currentRow) = sgn
+                currentRow = currentRow + 1        
+
+                c(i) = c(i) + 1
+                i = 1
+            else
+                c(i) = 1
+                i = i + 1
+            endif
+        end do
+    
+    end subroutine
+
+    ! Test the permutation function
+    subroutine testPermutations()
+    implicit none
+        integer, parameter :: s = 3
+        integer :: i
+        integer, allocatable :: p(:,:), sgn(:)
+        call permutations(s,p,sgn)
+        do i=1,factorial(s)
+            print *,i,":", p(i,:), "sgn:",sgn(i)
+        enddo
+    end subroutine
+    
+    ! Return the factorial of n
+    recursive function factorial(n) result(ret)
+    implicit none
+        integer :: n, ret
+
+        if (n < 0) then
+            print *, "Error: tried to calculate the factorial of a negative integer!"
+            ret = 0
+            return
+        endif
+
+        if (n < 2) then
+            ret = 1
+            return
+        endif
+
+        ret = n * factorial(n-1)
+
+    end function
+
     ! Calculate the second derivative of the wavefunction
     ! in the given direction using finite differences
     function secondDerivative(basis, coefficients, x, dir)
@@ -451,16 +696,12 @@ contains
         real(prec) :: samples(:,:)
         integer    :: i
 
-        ! Number of metropolis steps to take and discard
-        ! to remove dependance on initial position
-        integer, parameter :: INIT_STEPS = 1000
-
         ! Initial position is 0
         allocate(x(size(samples,1)))
         allocate(dx(size(samples,1)))
         x = 0
 
-        do i=1,size(samples,2)+INIT_STEPS
+        do i=1,size(samples,2)+metroInit
 
             ! Move some distance r in any direction
             theeta = rand()*pi
@@ -482,7 +723,7 @@ contains
                 x(1) = minR
             endif
 
-            if (i>INIT_STEPS) samples(:,i-INIT_STEPS) = x
+            if (i>metroInit) samples(:,i-metroInit) = x
         enddo
     end subroutine
 

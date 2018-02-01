@@ -22,5 +22,5 @@ for i in range(0,len(lines)):
         continue
 
 plt.hist2d(xs,ys,bins=100)
-plt.axes().set_aspect('equal', 'datalim')
+#plt.axes().set_aspect('equal', 'datalim')
 plt.show()
