@@ -143,7 +143,7 @@ contains
     real(prec) :: r(3), a
         print *, "Debugging atomic state: "
         call state%printDebugInfo()
-        open(unit=1,file="wavefunctionDebug")
+        open(unit=1,file="output/atomicStateDebug")
         do xi=-grid,grid
             do yi=-grid,grid
                 r(1) = 5*state%n*angstrom*xi/real(grid)
@@ -164,11 +164,11 @@ contains
     real(prec) :: r
         do n=1,3
             do l=0,n-1
-                write(2,*) "#"
+                write(unit,*) "#"
                 do i=1,1000
                     r = real(i)/1000
                     r = r * 15
-                    write(2,*) r,",",radialPart(n,l,r*angstrom,1)
+                    write(unit,*) r,",",radialPart(n,l,r*angstrom,1)
                 enddo
             enddo
         enddo
@@ -181,11 +181,11 @@ contains
     real(prec) :: x
         do l=0,4
             do m=0,l
-                write(2,*) "#"
+                write(unit,*) "#"
                 do i=1,1000
                     x = real(i)/1000
                     x = 2*(x-0.5)
-                    write(2,*) x,",",associatedLegendrePolynomial(l,m,x)
+                    write(unit,*) x,",",associatedLegendrePolynomial(l,m,x)
                 enddo
             enddo
         enddo

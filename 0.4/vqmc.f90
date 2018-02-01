@@ -67,9 +67,9 @@ contains
         allocate(coefficients(size(basis)))
 
         call optimizeBasisRandomSearch(basis, coefficients, potential, 50, randCoeffChange)
-        call optimizeBasisSteepestDecent(basis, coefficients, potential, 100, randCoeffChange)
+        !call optimizeBasisSteepestDecent(basis, coefficients, potential, 100, randCoeffChange)
         call sampleWavefunctionToFile(basis, coefficients)
-        call debugAtomicState(basis(1))
+        call writeWavefunctionToFile(basis, coefficients)
 
     end subroutine
 
@@ -93,9 +93,9 @@ contains
             newCoefficients(i) = 1
         enddo
 
-        open(unit=1,file="randomOptimizationEnergy")
-        open(unit=2,file="randomOptimizationBasis1Char")
-        open(unit=3,file="randomOptimizationBasis2Char")
+        open(unit=1,file="output/randomOptimizationEnergy")
+        open(unit=2,file="output/randomOptimizationBasis1Char")
+        open(unit=3,file="output/randomOptimizationBasis2Char")
 
         ! Initialize coefficients to the lowest energy
         ! of a random set of coefficients
@@ -148,9 +148,9 @@ contains
         allocate(gradReal(size(basis)))
         allocate(gradImag(size(basis)))
 
-        open(unit=1,file="steepestDecentOptimizationEnergy")
-        open(unit=2,file="steepestDecentOptimizationBasis1Char")
-        open(unit=3,file="steepestDecentOptimizationBasis2Char")
+        open(unit=1,file="output/steepestDecentOptimizationEnergy")
+        open(unit=2,file="output/steepestDecentOptimizationBasis1Char")
+        open(unit=3,file="output/steepestDecentOptimizationBasis2Char")
 
         shunt = startingShunt
         
@@ -247,8 +247,8 @@ contains
         integer           :: s1, grid
 
         print *, "Creating character plot data..."
-        open(unit=1,file="energyVsCharacter")
-        open(unit=2,file="varianceVsCharacter")
+        open(unit=1,file="output/energyVsCharacter")
+        open(unit=2,file="output/varianceVsCharacter")
         grid = 100
         do s1=1,grid
             print *, "Progress: ", s1, "/", grid
@@ -265,6 +265,30 @@ contains
 
     end subroutine
 
+    ! Output wavefunction values to a file for plotting etc
+    subroutine writeWavefunctionToFile(basis, coefficients)
+    implicit none
+    class(basisState) :: basis(:)
+    complex(prec)     :: coefficients(:)
+    integer    :: xi, yi
+    integer, parameter :: grid = 100
+    real(prec) :: r(3), a
+        print *, ""
+        print *, "Writing wavefunction to file..."
+        open(unit=1,file="output/wavefunctionValues")
+        do xi=-grid,grid
+            do yi=-grid,grid
+                r(1) = 5*angstrom*xi/real(grid)
+                r(3) = 5*angstrom*yi/real(grid)
+                a = abs(wavefunction(basis, coefficients, r))**2
+                if (.not. isnan(a)) then
+                    write(1,*) r(1)/angstrom,",",r(3)/angstrom,",",a
+                endif
+            enddo
+        enddo
+        close(unit=1)
+    end subroutine
+
     ! Output a sampled wavefuntion to a file for plotting etc
     subroutine sampleWavefunctionToFile(basis, coefficients)
     implicit none
@@ -272,7 +296,7 @@ contains
         complex(prec)     :: coefficients(:)
         real(prec) :: samples(3,metroSamples)
         integer    :: i
-        open(unit=1,file="wavefunctionSamples")
+        open(unit=1,file="output/wavefunctionSamples")
         print *, ""
         print *, "Sampling wavefunction to file..."
         call metro(samples,basis,coefficients)
