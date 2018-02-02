@@ -1,2 +1,2 @@
-gfortran ./constants.f95 ./vqmc.f95 ./basisSets.f95 ./program.f95
+gfortran ./constants.f90 ./vqmc.f90 ./basisSets.f90 ./program.f90
 del *.mod

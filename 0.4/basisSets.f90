@@ -4,6 +4,11 @@ use constants
 use vqmc, only: basisState
 implicit none
 
+    ! The minimum distance from the origin we can evaluate
+    ! atomic states. This shouldn't be needed but higher
+    ! l, m states break without it
+    real(prec), parameter :: MIN_R = angstrom/10000
+
     type, extends(basisState) :: atomicState
     private
         integer :: n, l, m, z
@@ -74,6 +79,15 @@ contains
     implicit none
     integer    :: l, m
     real(prec) :: x, ret
+
+        ! Deal with the m < 0 case
+        if (m<0) then
+            ret = ((-1)**m)*factorial(l-m)/real(factorial(l+m))
+            ret = associatedLegendrePolynomial(l, -m, x)
+            return
+        endif
+
+        ! Apply a (complicated) recursion relation
         if (l==0 .and. m==0) then
             ret = 1
         else if (l == m) then
@@ -128,18 +142,24 @@ contains
     integer    :: n, l, m, z
     real(prec) :: x(3), theeta, phi
     complex(prec)    :: ret
-        if (x(1)>0) then
+
+        if (norm2(x)<MIN_R) x = (/MIN_R,MIN_R,MIN_R/)/sqrt(real(3))
+
+        if (x(1) /= 0) then
             phi = atan(x(2)/x(1))
         else
             phi = pi/2
         endif
+
         if (norm2(x)>0) then
             theeta = acos(x(3)/norm2(x))
         else
             theeta = 0
         endif
+
         ret = sphericalHarmonic(l, m, theeta, phi)
-        ret = ret*radialPart(n, l, norm2(x), z)        
+        ret = ret*radialPart(n, l, norm2(x), z)
+        if (ret==0) print *, n, l, m, z, x
     end function
 
     ! Log wavefunctions for debugging

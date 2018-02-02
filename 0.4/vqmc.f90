@@ -9,7 +9,7 @@ use constants
 implicit none
 
     ! Parameters controlling our vqmc simulation
-    integer,    parameter :: metroSamples = 10000      ! The number of metropolis electron configurations that are used
+    integer,    parameter :: metroSamples = 100000     ! The number of metropolis electron configurations that are used
     real(prec), parameter :: minR = angstrom/10000     ! The minimum distance e's are alowed from nucleii
     real(prec), parameter :: maxMetroJump = 4*angstrom ! The maximum distance an electron can move in a metropolis trial move
     integer, parameter    :: metroInit = 1000          ! Number of metropolis steps to take and discard to remove dependance on initial position
@@ -373,9 +373,95 @@ contains
         enddo
     end function
 
+    ! Calculate the local kinetic of a slater determinant
+    ! made from the given single particle basis states
+    ! evaluated at the given electron configuration
+    function slaterLocalKineticSpinless(singleParticleBasis, config) result(ret)
+    implicit none
+        class(basisState)       :: singleParticleBasis(:)
+        real(prec)              :: config(:,:)
+        real(prec), parameter   :: eps = 0.00001 * angstrom
+        real(prec), allocatable :: delta(:,:)
+        complex(prec)           :: laplacian, valueAtConfig, ret
+        integer                 :: i, j
+
+        if (size(config,1) /= 3) print *, "Error in slaterLocalKinetic, wrong spatial dimension!"
+        if (size(config,2) /= size(singleParticleBasis)) print *, "Error in slaterLocalKinetic, # electrons /= # basis states!"
+
+        allocate(delta(size(config,1),size(config,2)))
+        valueAtConfig = slaterDeterminantSpinless(singleParticleBasis, config)
+
+        ! Calculate laplacian = sum_i(laplacian_i)
+        ! where laplacian_i is the laplacian of
+        ! the slater determinant w.r.t the ith
+        ! electronic position
+        laplacian = 0
+        delta = 0
+        do i=1,size(config,2) ! i <=> electrons           
+            do j=1,3 ! j <=> directions
+                ! Evaluate d^2/dx_j^2 using finite differences and add it to the laplacian
+                delta(j,i) = eps ! Create a displacement of the ith electron in the jth direction
+                laplacian = laplacian + slaterDeterminantSpinless(singleParticleBasis, config + delta) - &
+                                        2*valueAtConfig + &
+                                        slaterDeterminantSpinless(singleParticleBasis, config - delta)
+                delta(j,i) = 0   ! Reset
+            enddo
+        enddo
+        laplacian = laplacian / (eps**2)
+        ret = -laplacian*(hbar**2)/(2*mElectron)
+        ret = ret / valueAtConfig ! Calculating *local* kinetic energy
+
+    end function
+
     ! Calculate the energetics of the slater determinant defined by the given
+    ! up states and down states using monte carlo integration
+    subroutine energeticsSlater(upStates, downStates, potential, numConfigs, energy)
+    implicit none
+        class(basisState)       :: upStates(:), downStates(:)
+        procedure(pot)          :: potential
+        real(prec), allocatable :: upPos(:,:,:), downPos(:,:,:), allPos(:,:,:)
+        integer                 :: i, j, i2, j2, numConfigs, N_u, N_d
+        complex(prec)           :: energy
+        real(prec)              :: dr(3)
+
+        N_u = size(upStates)   ! # up electrons   = # up states
+        N_d = size(downStates) ! # down electrons = # down states
+        energy = 0
+
+        upPos = metroSlaterSpinless(upStates, numConfigs)     ! Array of up electron positions
+        downPos = metroSlaterSpinless(downStates, numConfigs) ! Array of down electron positions    
+        allocate(allPos(3, N_u + N_d, numConfigs))            ! Array of all electron positions
+        allPos(:,1:N_u,:) = downPos
+        allPos(:,N_u+1:N_u+N_d,:) = upPos    
+
+        ! Calculate all non electron-electron interactions
+        do i=1,numConfigs
+
+            ! Sum potentials for all electrons
+            do j=1,N_u + N_d
+                energy = energy + potential(allPos(:,j,i))
+            enddo
+            
+            ! Add kinetic energy of up and down electrons
+            energy = energy + slaterLocalKineticSpinless(upStates, upPos(:,:,i))
+            energy = energy + slaterLocalKineticSpinless(downStates, upPos(:,:,i))
+
+            ! Sum electron - electron coulomb interactions
+            do i2=1, N_u + N_d - 1
+                do j2=i2+1, N_u + N_d
+                    dr = allPos(:,i2,i) - allPos(:,j2,i)
+                    energy = energy + qElectron**2/(4*pi*epsNaught*norm2(dr))
+                enddo
+            enddo
+
+        enddo
+        energy = energy/real(numConfigs)
+
+    end subroutine
+
+    ! Calculate the energetics of the slater determinant defined by the given (spinless)
     ! single particle basis in the given potential using monte carlo integration
-    subroutine energeticsSlater(singleParticleBasis, potential, numConfigs, energy)
+    subroutine energeticsSlaterSpinless(singleParticleBasis, potential, numConfigs, energy)
     implicit none
         class(basisState)       :: singleParticleBasis(:)
         procedure(pot)          :: potential
@@ -384,13 +470,13 @@ contains
         complex(prec)           :: energy
         integer                 :: i, j, i2, j2, numConfigs, N
         
-        configs = metroSlater(singleParticleBasis, numConfigs)
+        configs = metroSlaterSpinless(singleParticleBasis, numConfigs)
         energy = 0
         N = size(singleParticleBasis) ! # of electrons = # single particle states in S.D
 
-        do i=1,size(configs, 3) ! i <=> configs
+        do i=1,numConfigs ! i <=> configs
 
-            ! Sum the electron - nuclear interactions
+            ! Sum the electron - external potential interactions
             do j=1,N ! j <=> electrons
                 energy = energy + potential(configs(:,j,i))
             enddo
@@ -398,50 +484,61 @@ contains
             ! Sum the electron - electron interactions
             do i2=1,N-1
                 do j2=i2+1,N
-                    print *, i2, j2
                     ! i2, j2 <=> electron pair
                     dr = configs(:,i2,i) - configs(:,j2,i)
                     energy = energy + qElectron**2/(4*pi*epsNaught*norm2(dr))
                 enddo
             enddo
 
-            ! TODO add electron kinetic energies
-    
+            ! Add the local kinetic energy
+            energy = energy + slaterLocalKineticSpinless(singleParticleBasis, configs(:,:,i))
+
         enddo
+        energy = energy / numConfigs
 
     end subroutine
 
     ! Sample n electron configurations from a slater determinant
-    ! constructed from the given basis states
-    function metroSlater(singleParticleBasis, n)
+    ! constructed from the given (spinless) basis states
+    function metroSlaterSpinless(singleParticleBasis, n)
     implicit none
         class(basisState)       :: singleParticleBasis(:)
-        real(prec), allocatable :: metroSlater(:,:,:) ! # dim, # electrons, # samples
+        real(prec), allocatable :: metroSlaterSpinless(:,:,:) ! # dim, # electrons, # samples
         real(prec), allocatable :: config(:,:), newConfig(:,:)
         integer                 :: n, M, i
-        real(prec)              :: oldProb, newProb
+        real(prec)              :: oldProb, newProb, dx(3), r, theeta, phi
 
-        M = size(singleParticleBasis)
-        allocate(metroSlater(3,M,n))
+        M = size(singleParticleBasis) ! # electrons = # basis
+        allocate(metroSlaterSpinless(3,M,n))
         allocate(config(3,M))
         allocate(newConfig(3,M))
         config = 0 ! Initial configuration is all electrons at the origin
         
         do i=1,n + metroInit
+
+            ! Make a metropolis trial move (move one electron
+            ! by up to maxMetroJump in a random direction)
+            r      = rand()*maxMetroJump
+            theeta = rand()*pi
+            phi    = rand()*2*pi
             
-            ! Make a metropolis trial move
-            call random_number(newConfig)
-            newConfig = config + (2*newConfig-1)*angstrom*4
+            dx(1) = r*sin(theeta)*cos(phi)
+            dx(2) = r*sin(theeta)*sin(phi)
+            dx(3) = r*cos(theeta)
+
+            newConfig = 0
+            newConfig(:,int(rand()*M+1)) = dx
+            newConfig = config + newConfig
             
             ! Apply the metropolis rejection
-            oldProb = slaterDeterminant(singleParticleBasis, config)
-            newProb = slaterDeterminant(singleParticleBasis, newConfig)
+            oldProb = abs(slaterDeterminantSpinless(singleParticleBasis, config))**2
+            newProb = abs(slaterDeterminantSpinless(singleParticleBasis, newConfig))**2
             if (newProb/oldProb > rand()) config = newConfig
 
             ! Sample the current config if it's not an intitalization step
-            if (i>metroInit) metroSlater(:,:,i-metroInit) = config
+            if (i>metroInit) metroSlaterSpinless(:,:,i-metroInit) = config
         enddo        
-    
+
     end function
 
     ! Test the metropolis algorithm as applied to slater determinants
@@ -454,7 +551,7 @@ contains
         real(prec)              :: diff(3)
         real(prec), allocatable :: configs(:,:,:)
         
-        configs = metroSlater(singleParticleBasis, n)
+        configs = metroSlaterSpinless(singleParticleBasis, n)
         open(unit=2,file="output/testMetroSlater")
         
         do i=1,size(configs,3)
@@ -466,13 +563,46 @@ contains
         
     end subroutine
 
+    ! Test the metropolis algorithm for slater determinants reproduces
+    ! single particle distributions
+    subroutine sampleMetroSlaterToFile(singleParticleBasis, n)
+    implicit none
+        class(basisState)       :: singleParticleBasis(1)
+        integer                 :: n, i
+        real(prec), allocatable :: configs(:,:,:)
+
+        print *, ""
+        print *, "Sampling slater determinant to file..."
+        
+        configs = metroSlaterSpinless(singleParticleBasis, n)
+        open(unit=2,file="output/sampleMetroSlater")
+        
+        ! Output the x, z coordinates of our single particle
+        do i=1,size(configs,3)
+            write (2,*) configs(1,1,i)/angstrom,",",configs(3,1,i)/angstrom
+        enddo
+
+        close(unit=2)
+        
+    end subroutine
+
+    ! A slater determinant of fermions with spins
+    function slaterDeterminant(upStates, downStates, upPositions, downPositions) result(ret)
+    implicit none
+        class(basisState) :: upStates(:), downStates(:)
+        real(prec)        :: upPositions(:,:), downPositions(:,:)
+        complex(prec)     :: ret
+        ret = slaterDeterminantSpinless(upStates,upPositions) * &
+              slaterDeterminantSpinless(upStates,upPositions)
+    end function
+
     ! A slater determinant of the given single particle states, evaluated
     ! at the given electron positions
-    function slaterDeterminant(singleParticleStates, electronPositions) result(ret)
+    function slaterDeterminantSpinless(singleParticleStates, electronPositions) result(ret)
     implicit none
         class(basisState)    :: singleParticleStates(:)
         real(prec)           :: electronPositions(:,:)
-        complex(prec)        :: ret, prod
+        complex(prec)        :: ret, prod, elm
         integer              :: M, i, j
         integer, allocatable :: perm(:,:), sgn(:)
 
@@ -497,16 +627,18 @@ contains
         do i=1,factorial(M) ! Sum over permutations
             prod = 1
             do j=1,M ! Product over entries of our slater matrix
-                prod = prod*singleParticleStates(j)%value(electronPositions(:,perm(i,j)))
+                elm = singleParticleStates(j)%value(electronPositions(:,perm(i,j)))
+                prod = prod*elm
             enddo
             ret = ret + sgn(i)*prod
         enddo
+        ret = ret/sqrt(real(M)) ! Normalization (unneccasary as so far everything else isn't normalized anyway but whatever)
 
     end function
 
     ! Output data for a plot of the abs(slater determinant)**2
     ! against electron seperation for the two electron case
-    subroutine testSlaterDet(basis)
+    subroutine testSlaterDetSpinless(basis)
     implicit none
         class(basisState) :: basis(2)
         real(prec)        :: ePos(3,2)
@@ -523,7 +655,7 @@ contains
             ePos(1,1) = 10*angstrom*i/real(grid) ! Move one electron away from origin
             w = basis(1)%value(ePos(:,1))*basis(2)%value(ePos(:,2)) - &
                 basis(1)%value(ePos(:,2))*basis(2)%value(ePos(:,1))
-            write(2,*) epos(1,1)/angstrom, ",", abs(slaterDeterminant(basis, ePos)-w)**2
+            write(2,*) epos(1,1)/angstrom, ",", abs(slaterDeterminantSpinless(basis, ePos)-w)**2
         enddo
 
         close(unit=2)
