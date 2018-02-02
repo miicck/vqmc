@@ -14,6 +14,8 @@ implicit none
     real(prec), parameter :: maxMetroJump = 4*angstrom ! The maximum distance an electron can move in a metropolis trial move
     integer, parameter    :: metroInit = 1000          ! Number of metropolis steps to take and discard to remove dependance on initial position
 
+    real(prec) :: permutationCPUtime = 0
+
     ! An object that can be used as a basis function
     type, abstract :: basisState
     contains
@@ -670,6 +672,9 @@ contains
     implicit none
         integer :: n, i, temp, currentRow, sgn
         integer, allocatable :: a(:), c(:), p(:,:), s(:)
+        real(prec) :: startT, endT
+
+        call cpu_time(startT)
         
         allocate(a(n))
         allocate(c(n))
@@ -715,6 +720,9 @@ contains
                 i = i + 1
             endif
         end do
+
+        call cpu_time(endT)
+        permutationCPUtime = permutationCPUtime + (endT-startT)
     
     end subroutine
 

@@ -8,6 +8,7 @@ implicit none
     ! atomic states. This shouldn't be needed but higher
     ! l, m states break without it
     real(prec), parameter :: MIN_R = angstrom/10000
+    real(prec) :: atomicCPUtime = 0
 
     type, extends(basisState) :: atomicState
     private
@@ -82,7 +83,7 @@ contains
 
         ! Deal with the m < 0 case
         if (m<0) then
-            ret = ((-1)**m)*factorial(l-m)/real(factorial(l+m))
+            ret = ((-1)**m)*factorial(l+m)/real(factorial(l-m))
             ret = associatedLegendrePolynomial(l, -m, x)
             return
         endif
@@ -140,8 +141,10 @@ contains
     function atomicWavefunction(n, l, m, z, x) result(ret)
     implicit none
     integer    :: n, l, m, z
-    real(prec) :: x(3), theeta, phi
+    real(prec) :: x(3), theeta, phi, startT, endT
     complex(prec)    :: ret
+
+        call cpu_time(startT)
 
         if (norm2(x)<MIN_R) x = (/MIN_R,MIN_R,MIN_R/)/sqrt(real(3))
 
@@ -160,6 +163,10 @@ contains
         ret = sphericalHarmonic(l, m, theeta, phi)
         ret = ret*radialPart(n, l, norm2(x), z)
         if (ret==0) print *, n, l, m, z, x
+
+        call cpu_time(endT)
+        atomicCPUtime = atomicCPUtime + (endT - startT)
+
     end function
 
     ! Log wavefunctions for debugging

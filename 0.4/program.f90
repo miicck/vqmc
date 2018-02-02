@@ -4,11 +4,22 @@ use atomicBasis
 implicit none
 
     integer, parameter :: ITTER = 100000
+    real(prec) :: startT, endT, time
+
+    call cpu_time(startT)
 
     call hydrogen()
     call helium()
     call beryllium()
     !call neon() ! Takes a while...
+
+    call cpu_time(endT)
+    time = endT-startT  
+
+    print *, ""
+    print *, "Performance information, total time: ",time, "seconds"
+    print *, "    CPU calculating atomic states: ", 100*atomicCPUtime/time, "%"
+    print *, "    CPU calculating permutations : ", 100*permutationCPUtime/time, "%"
 
 contains
 
