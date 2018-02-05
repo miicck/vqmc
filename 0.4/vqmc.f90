@@ -178,7 +178,7 @@ contains
         real(prec), allocatable :: upConfigs(:,:,:), downConfigs(:,:,:) ! # dim, # electrons, # samples
         real(prec), allocatable :: upConfig(:,:), newUpConfig(:,:), downConfig(:,:), newDownConfig(:,:)
         integer                 :: n, i, N_d, N_u
-        real(prec)              :: oldProb, newProb, dx(3), r, theeta, phi
+        real(prec)              :: oldProb, newProb
 
         ! Get electron counts
         N_u = size(upBasis)
@@ -201,29 +201,21 @@ contains
 
             ! Make a metropolis trial move (move one electron
             ! by up to maxMetroJump in a random direction)
-            r      = rand()*maxMetroJump
-            theeta = rand()*pi
-            phi    = rand()*2*pi
-            
-            dx(1) = r*sin(theeta)*cos(phi)
-            dx(2) = r*sin(theeta)*sin(phi)
-            dx(3) = r*cos(theeta)
+            newUpConfig = upConfig
+            newDownConfig = downConfig
 
             ! Move up or down electron with probability 0.5
+            ! Also deal with the N_u = 0, N_d = 0 cases
             if ((N_u > 0) .and. ((rand()<0.5) .or. (N_d==0))) then
-                newUpConfig = 0
-                newUpConfig(:,int(rand()*N_u+1)) = dx
-                newUpConfig = upConfig + newUpConfig       
+                call makeMetropolisMove(newUpConfig)      
             else if (N_d > 0) then
-                newDownConfig = 0
-                newDownConfig(:,int(rand()*N_d+1)) = dx
-                newDownConfig = downConfig + newDownConfig
+                call makeMetropolisMove(newDownConfig)
             endif
             
             ! Apply the metropolis rejection
             oldProb = abs(wavefunction(upBasis, downBasis, upConfig, downConfig))**2
             newProb = abs(wavefunction(upBasis, downBasis, newUpConfig, newDownConfig))**2
-            if (newProb/oldProb > rand()) then
+            if ((oldProb == 0) .or. (newProb/oldProb > rand())) then
                 upConfig = newUpConfig
                 downConfig = newDownConfig
             endif
@@ -234,6 +226,24 @@ contains
                 downConfigs(:,:,i-metroInit) = downConfig
             endif
         enddo
+    end subroutine
+
+    ! Make a metropolis move on the given electron configuration
+    subroutine makeMetropolisMove(config)
+    implicit none
+        real(prec) :: config(:,:), r, theeta, phi, dx(3)
+        integer    :: n
+
+        r      = rand()*maxMetroJump
+        theeta = rand()*pi
+        phi    = rand()*2*pi        
+
+        dx(1) = r*sin(theeta)*cos(phi)
+        dx(2) = r*sin(theeta)*sin(phi)
+        dx(3) = r*cos(theeta)
+
+        n = int(rand()*size(config,2)+1)
+        config(:,n) = config(:,n) + dx
     end subroutine
 
     ! A simple exponential jastrow factor
@@ -276,6 +286,16 @@ contains
 
     end function
 
+    ! A slater determinant combined with a jastrow factor
+    function slaterJastrow(upBasis, downBasis, upConfig, downConfig) result(ret)
+    implicit none
+        class(basisState) :: upBasis(:), downBasis(:)
+        real(prec)        :: upConfig(:,:), downConfig(:,:)
+        complex(prec)     :: ret
+            ret = slaterDeterminant(upBasis, downBasis, upConfig, downConfig) * &
+                  jastrowFactor(upConfig, downConfig)
+    end function
+
     ! A slater determinant of two spin species seperates into the product
     ! of slater determinants of each species (no pauli exclusion between spins)
     function slaterDeterminant(upBasis, downBasis, upConfig, downConfig) result(ret)
@@ -285,8 +305,8 @@ contains
         complex(prec)     :: ret
         if (size(upBasis) + size(downBasis)==0) print *, "Error in slaterDeterminant, no basis!"
         ret = 1
-        if (size(upBasis) > 0)   ret = ret * slaterDeterminantSpinless(upBasis, upConfig)
-        if (size(downBasis) > 0) ret = ret * slaterDeterminantSpinless(downBasis, downConfig)
+        if (size(upBasis)>0) ret = ret * slaterDeterminantSpinless(upBasis, upConfig)
+        if (size(downBasis)>0) ret = ret * slaterDeterminantSpinless(downBasis, downConfig)
     end function
 
     ! A slater determinant of the given single particle states, evaluated

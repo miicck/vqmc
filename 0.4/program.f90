@@ -45,7 +45,7 @@ contains
         upBasis(1) = atomicState(1,0,0,1)
 
         call cpu_time(startT)
-        call monteCarloEnergetics(upBasis, downBasis, slaterDeterminant, hydrogenPotential, ITTER, energy)
+        call monteCarloEnergetics(upBasis, downBasis, slaterJastrow, hydrogenPotential, ITTER, energy)
         call cpu_time(endT)
         print *, "Hydrogen energy:", realpart(energy)/electronVolt, &
                 "eV Calculation took:", (endT-startT), "seconds"
@@ -75,7 +75,7 @@ contains
         downBasis(1) = atomicState(1,0,0,2)
 
         call cpu_time(startT)
-        call monteCarloEnergetics(upBasis, downBasis, slaterDeterminant, heliumPotential, ITTER, energy)
+        call monteCarloEnergetics(upBasis, downBasis, slaterJastrow, heliumPotential, ITTER, energy)
         call cpu_time(endT)
         print *, "Helium energy:", realpart(energy)/electronVolt, &
                 "eV Calculation took:", (endT-startT), "seconds"
@@ -106,7 +106,7 @@ contains
         downBasis(2) = atomicState(2,0,0,4)
 
         call cpu_time(startT)
-        call monteCarloEnergetics(upBasis, downBasis, slaterDeterminant, berylliumPotential, ITTER, energy)
+        call monteCarloEnergetics(upBasis, downBasis, slaterJastrow, berylliumPotential, ITTER, energy)
         call cpu_time(endT)
         print *, "Beryllium energy:", realpart(energy)/electronVolt, &
                  "eV Calculation took:", (endT-startT), "seconds"
@@ -143,7 +143,7 @@ contains
         downBasis(5) = atomicState(2,1,1,10)
 
         call cpu_time(startT)
-        call monteCarloEnergetics(upBasis, downBasis, slaterDeterminant, neonPotential, ITTER, energy)
+        call monteCarloEnergetics(upBasis, downBasis, slaterJastrow, neonPotential, ITTER, energy)
         call cpu_time(endT)
         print *, "Neon energy:", realpart(energy)/electronVolt, &
                 "eV Calculation took:", (endT-startT), "seconds"
