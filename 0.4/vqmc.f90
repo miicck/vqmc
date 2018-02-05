@@ -24,12 +24,6 @@ implicit none
     end type
 
     abstract interface
-        ! A wavefunction
-        function wvfn(x)
-            import
-            real(prec) :: x(3)
-            complex(prec) :: wvfn
-        end function
 
         ! Interface for basis function
         function basisWfn(this, x)
@@ -53,390 +47,46 @@ implicit none
             import
             real(prec) :: x(3), pot
         end function
+
+        ! A method of taking a single particle basis and
+        ! electronic positions and returning
+        ! a complex amplitude (slater, slater-jastrow etc...)
+        function manyBodyWfn(upBasis, downBasis, upConfig, downConfig)
+            import
+            real(prec) :: upConfig(:,:), downConfig(:,:)
+            complex(prec) :: manyBodyWfn
+            class(basisState) :: upBasis(:), downBasis(:)
+        end function
     end interface
 
 contains
 
-    ! Optimize the coefficients in the given basis to
-    ! minimize the energy in the given potential
-    subroutine optimizeBasis(basis, potential)
+    ! Use monte carlo integration to get the energetics of the given wavefunction in the given potential
+    subroutine monteCarloEnergetics(upBasis, downBasis, wavefunction, potential, numConfigs, energy)
     implicit none
-    class(basisState) :: basis(:)
-    procedure(pot)    :: potential
-    real(prec)        :: randCoeffChange
-    complex(prec), allocatable :: coefficients(:)
-
-        allocate(coefficients(size(basis)))
-
-        call optimizeBasisRandomSearch(basis, coefficients, potential, 50, randCoeffChange)
-        !call optimizeBasisSteepestDecent(basis, coefficients, potential, 100, randCoeffChange)
-        call sampleWavefunctionToFile(basis, coefficients)
-        call writeWavefunctionToFile(basis, coefficients)
-
-    end subroutine
-
-    ! Optimize the coefficients of our basis using a random search
-    ! of coefficient space. lastCoeffChange will contain the amount
-    ! that |coefficients| changed at the last step in energy (useful
-    ! to know for further optimization)
-    subroutine optimizeBasisRandomSearch(basis, coefficients, potential, itterations, lastCoeffChange)
-    implicit none
-    class(basisState)          :: basis(:)
-    procedure(pot)             :: potential
-    complex(prec), allocatable :: newCoefficients(:)
-    real(prec)                 :: samples(3,metroSamples), workVar, lastCoeffChange
-    complex(prec)              :: workE, minEnergy, coefficients(:)
-    integer                    :: i, n, itterations
-    real(prec), parameter      :: relaxation = 0
-
-        ! Allocate space
-        allocate(newCoefficients(size(basis)))
-        do i=1,size(basis)
-            newCoefficients(i) = 1
-        enddo
-
-        open(unit=1,file="output/randomOptimizationEnergy")
-        open(unit=2,file="output/randomOptimizationBasis1Char")
-        open(unit=3,file="output/randomOptimizationBasis2Char")
-
-        ! Initialize coefficients to the lowest energy
-        ! of a random set of coefficients
-        print *, "Initializing basis..."
-        minEnergy = huge(workVar)
-        do n=1,itterations
-            do i=1,size(basis)
-                coefficients(i) = rand()*(1-relaxation) + newCoefficients(i)*relaxation
-            enddo
-            call normalizeCoefficients(coefficients)
-            call metro(samples, basis, coefficients)  
-            call energetics(basis, coefficients, potential, samples, workE, workVar)
-            if (realpart(workE)<realpart(minEnergy)) then
-                minEnergy = realpart(workE)
-                lastCoeffChange = norm2(abs(newCoefficients-coefficients))
-                newCoefficients = coefficients
-            endif
-            print *, "    Itteration", n, "of", itterations, "energy:", realpart(minEnergy)/electronVolt, "eV"
-            write(1,*) n,",", realpart(minEnergy)/electronVolt
-            write(2,*) n,",", abs(newCoefficients(1))**2
-            write(3,*) n,",", abs(newCoefficients(2))**2
-        enddo
-        coefficients = newCoefficients
-
-        close(unit=1)
-        close(unit=2)
-        close(unit=3)
-    end subroutine
-
-    ! Optimize the basis using a steepest decent method, initially modifying
-    ! coefficients by +/- startingShunt, then reducing the shunts to narrow
-    ! in on the optimal set
-    subroutine optimizeBasisSteepestDecent(basis, coefficients, potential, itterations, startingShunt)
-    implicit none
-    class(basisState)          :: basis(:)
-    procedure(pot)             :: potential
-    complex(prec), allocatable :: newCoefficients(:)
-    real(prec),    allocatable :: gradReal(:), gradImag(:)
-    real(prec),    parameter   :: eps = 0.001
-    real(prec)                 :: samples(3,metroSamples), shunt, itterVar, newVar, workVar, startingShunt
-    complex(prec)              :: itterEnergy, workE, coefficients(:)
-    integer                    :: i, n, m, itterations
-    logical                    :: energyDecrease
-
-        ! TODO - remove unnecassary calls to energetics(), should use results
-        ! of previous itteration to calculate gradients
-
-        ! Allocate space
-        allocate(newCoefficients(size(basis)))
-        allocate(gradReal(size(basis)))
-        allocate(gradImag(size(basis)))
-
-        open(unit=1,file="output/steepestDecentOptimizationEnergy")
-        open(unit=2,file="output/steepestDecentOptimizationBasis1Char")
-        open(unit=3,file="output/steepestDecentOptimizationBasis2Char")
-
-        shunt = startingShunt
-        
-        do n=1,itterations
-
-            call normalizeCoefficients(coefficients) ! Normalize our starting coefficients
-            newCoefficients = coefficients ! Reset working set used to calculate gradients
-
-            ! Generate samples in coordinate space using
-            ! the metropolis algorithm for the current
-            ! trial wavefunction
-            call metro(samples, basis, coefficients)    
-                
-            ! Calculate the energetics with the current coefficients
-            call energetics(basis, coefficients, potential, samples, itterEnergy, itterVar)           
-
-            ! Calculate the real and imaginary coefficient
-            ! gradients of the cost function
-            do i=1,size(basis)
-
-                ! Real gradients
-                newCoefficients(i) = coefficients(i) + (eps, 0)
-                call energetics(basis, newCoefficients, potential, samples, workE, workVar)
-                gradReal(i) = realpart(workE-itterEnergy) / eps
-                newCoefficients(i) = coefficients(i) ! Reset
-                            
-                ! Imaginary gradients
-                newCoefficients(i) = coefficients(i) + (0, eps)               
-                call energetics(basis, newCoefficients, potential, samples, workE, workVar)
-                gradImag(i) = realpart(workE-itterEnergy) / eps
-                newCoefficients(i) = coefficients(i) ! Reset                
-
-            enddo
-
-            ! Shunt the coefficients closer to the minimum
-            ! by about the size of the minimum coefficient
-            call makeOrderUnityReal(gradReal)
-            call makeOrderUnityReal(gradImag)
-            gradReal = gradReal * shunt
-            gradImag = gradImag * shunt
-
-            ! Move along steepest decent
-            newCoefficients = coefficients - gradReal! - gradImag*(0,1)
-            call energetics(basis, newCoefficients, potential, samples, workE, newVar)
-
-            ! Accept the new coefficients if they reduced the cost function
-            if (realpart(workE) < realpart(itterEnergy)) then
-                energyDecrease = .true.
-                coefficients = newCoefficients
-            else
-                energyDecrease = .false.
-                shunt = shunt * 0.5 ! Reduce the coefficient shunt, to search more finely
-            endif
-
-            write(1,*) n,",", min(realpart(workE),realpart(itterEnergy))/electronVolt
-            write(2,*) n,",", abs(coefficients(1))**2
-            write(3,*) n,",", abs(coefficients(2))**2
-
-            print *, ""
-            print *, ""
-            print *, ""
-            print *, "Steepest decent basis opimization"
-            print *, "Itteration:", n
-            print *, "Energy decrease:", energyDecrease
-            print *, "    Energy:  ", realpart(itterEnergy)/electronVolt, "eV"
-            print *, "    Variance:", min(newVar, itterVar)/(electronVolt**2), "eV^2"
-            print *, ""
-            print *, "Basis character:"
-            do m=1, size(basis)
-                print *, "        Basis", m, "character", abs(coefficients(m))**2, coefficients(m)
-            enddo
-            print *, ""
-            print *, "Basis changes (shunt =",shunt,")"
-            do m=1, size(basis)
-                print *, "        Real, imag change", m, -gradReal(m), -gradImag(m)
-            enddo
-
-        enddo
-
-        close(unit=1)
-        close(unit=2)
-        close(unit=3)
-        
-    end subroutine
-
-    ! Get data for plots of quantities vs basis character
-    ! for two basis states
-    subroutine characterPlots(basis, potential)
-    implicit none
-        class(basisState) :: basis(2)
-        procedure(pot)    :: potential        
-        complex(prec)     :: coefficients(2), energy
-        real(prec)        :: variance, samples(3,metroSamples)
-        integer           :: s1, grid
-
-        print *, "Creating character plot data..."
-        open(unit=1,file="output/energyVsCharacter")
-        open(unit=2,file="output/varianceVsCharacter")
-        grid = 100
-        do s1=1,grid
-            print *, "Progress: ", s1, "/", grid
-            coefficients(1) = s1/real(grid)
-            coefficients(2) = 1-coefficients(1)
-            call normalizeCoefficients(coefficients)
-            call metro(samples, basis, coefficients)
-            call energetics(basis, coefficients, potential, samples, energy, variance)
-            write(1,*)  abs(coefficients(1))**2,",",realpart(energy)/electronVolt
-            write(2,*)  abs(coefficients(1))**2,",",variance/(electronVolt**2)
-        enddo
-        close(unit=1)
-        close(unit=2)
-
-    end subroutine
-
-    ! Output wavefunction values to a file for plotting etc
-    subroutine writeWavefunctionToFile(basis, coefficients)
-    implicit none
-    class(basisState) :: basis(:)
-    complex(prec)     :: coefficients(:)
-    integer    :: xi, yi
-    integer, parameter :: grid = 100
-    real(prec) :: r(3), a
-        print *, ""
-        print *, "Writing wavefunction to file..."
-        open(unit=1,file="output/wavefunctionValues")
-        do xi=-grid,grid
-            do yi=-grid,grid
-                r(1) = 5*angstrom*xi/real(grid)
-                r(3) = 5*angstrom*yi/real(grid)
-                a = abs(wavefunction(basis, coefficients, r))**2
-                if (.not. isnan(a)) then
-                    write(1,*) r(1)/angstrom,",",r(3)/angstrom,",",a
-                endif
-            enddo
-        enddo
-        close(unit=1)
-    end subroutine
-
-    ! Output a sampled wavefuntion to a file for plotting etc
-    subroutine sampleWavefunctionToFile(basis, coefficients)
-    implicit none
-        class(basisState) :: basis(:)    
-        complex(prec)     :: coefficients(:)
-        real(prec) :: samples(3,metroSamples)
-        integer    :: i
-        open(unit=1,file="output/wavefunctionSamples")
-        print *, ""
-        print *, "Sampling wavefunction to file..."
-        call metro(samples,basis,coefficients)
-        do i=1,size(samples,2)
-            write(1,*) samples(1,i)/angstrom, ",", samples(3,i)/angstrom
-        enddo
-        close(unit=1)
-    end subroutine
-
-    ! Normalize a coefficient set
-    subroutine normalizeCoefficients(set)
-    implicit none
-        complex(prec) :: set(:)
-        real(prec)    :: norm
-        integer       :: i
-        norm = 0
-        do i=1,size(set)
-            norm = norm + abs(set(i))**2
-        enddo
-        set = set/sqrt(norm)
-    end subroutine
-
-    ! Get the minimum modulus of a set of complex numbers
-    function minimumModulus(set) result(min)
-    implicit none
-    complex(prec) :: set(:)
-    real(prec) :: min
-    integer    :: i
-        min = huge(min)
-        do i=1,size(set)
-            if (abs(set(i))<min) min = abs(set(i))
-        enddo
-    end function
-
-    ! Make the values in a set O(1)
-    subroutine makeOrderUnityReal(set)
-    implicit none
-        real(prec) :: set(:), max
-        integer    :: i
-        max = 0
-        do i=1,size(set)
-            if (abs(set(i))>max) max = abs(set(i))
-        enddo
-        set = set / max
-    end subroutine
-
-    ! Make the values in a set O(1)
-    subroutine makeOrderUnityComplex(set)
-    implicit none
-        complex(prec) :: set(:)
-        real(prec)    :: max
-        integer       :: i
-        max = 0
-        do i=1,size(set)
-            if (abs(set(i))>max) max = abs(set(i))
-        enddo
-        set = set / max
-    end subroutine
-
-    ! A wavefucntion in a given basis, with given
-    ! coefficients evaluated at x
-    function wavefunction(basis, coefficients, x) result(ret)
-    implicit none
-        class(basisState) :: basis(:)
-        complex(prec)     :: ret, coefficients(:)
-        real(prec)        :: x(3)
-        integer           :: i
-        if (size(basis) /= size(coefficients)) then
-            print *, "ERROR: Basis/Coefficients mismatch!"
-        endif
-        ret = 0
-        do i=1,size(basis)
-            ret = ret + coefficients(i)*basis(i)%value(x)
-        enddo
-    end function
-
-    ! Calculate the local kinetic of a slater determinant
-    ! made from the given single particle basis states
-    ! evaluated at the given electron configuration
-    function slaterLocalKineticSpinless(singleParticleBasis, config) result(ret)
-    implicit none
-        class(basisState)       :: singleParticleBasis(:)
-        real(prec)              :: config(:,:)
-        real(prec), parameter   :: eps = 0.00001 * angstrom
-        real(prec), allocatable :: delta(:,:)
-        complex(prec)           :: laplacian, valueAtConfig, ret
-        integer                 :: i, j
-
-        if (size(config,1) /= 3) print *, "Error in slaterLocalKinetic, wrong spatial dimension!"
-        if (size(config,2) /= size(singleParticleBasis)) print *, "Error in slaterLocalKinetic, # electrons /= # basis states!"
-
-        allocate(delta(size(config,1),size(config,2)))
-        valueAtConfig = slaterDeterminantSpinless(singleParticleBasis, config)
-
-        ! Calculate laplacian = sum_i(laplacian_i)
-        ! where laplacian_i is the laplacian of
-        ! the slater determinant w.r.t the ith
-        ! electronic position
-        laplacian = 0
-        delta = 0
-        do i=1,size(config,2) ! i <=> electrons           
-            do j=1,3 ! j <=> directions
-                ! Evaluate d^2/dx_j^2 using finite differences and add it to the laplacian
-                delta(j,i) = eps ! Create a displacement of the ith electron in the jth direction
-                laplacian = laplacian + slaterDeterminantSpinless(singleParticleBasis, config + delta) - &
-                                        2*valueAtConfig + &
-                                        slaterDeterminantSpinless(singleParticleBasis, config - delta)
-                delta(j,i) = 0   ! Reset
-            enddo
-        enddo
-        laplacian = laplacian / (eps**2)
-        ret = -laplacian*(hbar**2)/(2*mElectron)
-        ret = ret / valueAtConfig ! Calculating *local* kinetic energy
-
-    end function
-
-    ! Calculate the energetics of the slater determinant defined by the given
-    ! up states and down states using monte carlo integration
-    subroutine energeticsSlater(upStates, downStates, potential, numConfigs, energy)
-    implicit none
-        class(basisState)       :: upStates(:), downStates(:)
+        class(basisState)       :: upBasis(:), downBasis(:)
+        procedure(manyBodyWfn)  :: wavefunction
         procedure(pot)          :: potential
         real(prec), allocatable :: upPos(:,:,:), downPos(:,:,:), allPos(:,:,:)
         integer                 :: i, j, i2, j2, numConfigs, N_u, N_d
         complex(prec)           :: energy
         real(prec)              :: dr(3)
 
-        N_u = size(upStates)   ! # up electrons   = # up states
-        N_d = size(downStates) ! # down electrons = # down states
+        N_u = size(upBasis)   ! # up electrons   = # up states
+        N_d = size(downBasis) ! # down electrons = # down states
         energy = 0
 
-        upPos = metroSlaterSpinless(upStates, numConfigs)     ! Array of up electron positions
-        downPos = metroSlaterSpinless(downStates, numConfigs) ! Array of down electron positions    
-        allocate(allPos(3, N_u + N_d, numConfigs))            ! Array of all electron positions
-        allPos(:,1:N_u,:) = downPos
-        allPos(:,N_u+1:N_u+N_d,:) = upPos    
+        if ((N_u == 0) .and. (N_d == 0)) then
+            print *, "Error, no basis states given for monte carlo energetics!"
+        endif
 
-        ! Calculate all non electron-electron interactions
+        ! Allocate/fill our arrays
+        call metropolis(upBasis, downBasis, wavefunction, numConfigs, upPos, downPos) ! Fill array of up/down electron positions
+        allocate(allPos(3, N_u + N_d, numConfigs))      ! Array of all electron positions
+        if (N_d > 0) allPos(:,1:N_d,:) = downPos        ! Fill the down part of allPos
+        if (N_u > 0) allPos(:,N_d+1:N_d+N_u,:) = upPos  ! Fill the up part of allPos
+
+        ! Perform monte carlo integration
         do i=1,numConfigs
 
             ! Sum potentials for all electrons
@@ -445,8 +95,7 @@ contains
             enddo
             
             ! Add kinetic energy of up and down electrons
-            energy = energy + slaterLocalKineticSpinless(upStates, upPos(:,:,i))
-            energy = energy + slaterLocalKineticSpinless(downStates, upPos(:,:,i))
+            energy = energy + localKinetic(upBasis, downBasis, wavefunction, upPos(:,:,i), downPos(:,:,i))
 
             ! Sum electron - electron coulomb interactions
             do i2=1, N_u + N_d - 1
@@ -457,64 +106,96 @@ contains
             enddo
 
         enddo
+
         energy = energy/real(numConfigs)
 
     end subroutine
 
-    ! Calculate the energetics of the slater determinant defined by the given (spinless)
-    ! single particle basis in the given potential using monte carlo integration
-    subroutine energeticsSlaterSpinless(singleParticleBasis, potential, numConfigs, energy)
+    ! Calculate the local kinetic energy of wavefunction
+    ! made from the given single particle basis states
+    ! evaluated at the given electron configuration
+    function localKinetic(upBasis, downBasis, wavefunction, upConfig, downConfig) result(ret)
     implicit none
-        class(basisState)       :: singleParticleBasis(:)
-        procedure(pot)          :: potential
-        real(prec), allocatable :: configs(:,:,:)
-        real(prec)              :: dr(3)
-        complex(prec)           :: energy
-        integer                 :: i, j, i2, j2, numConfigs, N
-        
-        configs = metroSlaterSpinless(singleParticleBasis, numConfigs)
-        energy = 0
-        N = size(singleParticleBasis) ! # of electrons = # single particle states in S.D
+        class(basisState)       :: upBasis(:), downBasis(:)
+        procedure(manyBodyWfn)  :: wavefunction
+        real(prec)              :: upConfig(:,:), downConfig(:,:)
+        real(prec), parameter   :: eps = angstrom / 10E4
+        real(prec), allocatable :: deltaUp(:,:), deltaDown(:,:)
+        complex(prec)           :: laplacian, valueAtConfig, ret
+        integer                 :: i, j
 
-        do i=1,numConfigs ! i <=> configs
+        if (size(upBasis)+size(downBasis)==0) Print *, "Error in localKinetic, no basis!"
+        if (size(upConfig,1) /= 3) print *, "Error in localKinetic, wrong spatial dimension for up electrons!"
+        if (size(downConfig,1) /= 3) print *, "Error in localKinetic, wrong spatial dimension for down electrons!"
 
-            ! Sum the electron - external potential interactions
-            do j=1,N ! j <=> electrons
-                energy = energy + potential(configs(:,j,i))
+        allocate(deltaUp(size(upConfig,1),size(upConfig,2)))
+        allocate(deltaDown(size(downConfig,1),size(downConfig,2)))
+
+        valueAtConfig = wavefunction(upBasis, downBasis, upConfig, downConfig)
+
+        ! Calculate laplacian = sum_i(laplacian_i)
+        ! where laplacian_i is the laplacian of
+        ! the wavefunction w.r.t the ith
+        ! electronic position
+        laplacian = 0
+        deltaUp = 0
+        deltaDown = 0
+
+        do i=1,size(upConfig,2) ! i <=> up electrons                 
+            do j=1,3 ! j <=> directions
+                ! Evaluate d^2/dx_j^2 using finite differences and add it to the laplacian
+                deltaUp(j,i) = eps ! Create a displacement of the ith electron in the jth direction
+                laplacian = laplacian + wavefunction(upBasis, downBasis, upConfig + deltaUp, downConfig) - &
+                                        2*valueAtConfig + &
+                                        wavefunction(upBasis, downBasis, upConfig - deltaUp, downConfig)         
+                deltaUp(j,i) = 0   ! Reset
             enddo
-
-            ! Sum the electron - electron interactions
-            do i2=1,N-1
-                do j2=i2+1,N
-                    ! i2, j2 <=> electron pair
-                    dr = configs(:,i2,i) - configs(:,j2,i)
-                    energy = energy + qElectron**2/(4*pi*epsNaught*norm2(dr))
-                enddo
-            enddo
-
-            ! Add the local kinetic energy
-            energy = energy + slaterLocalKineticSpinless(singleParticleBasis, configs(:,:,i))
-
         enddo
-        energy = energy / numConfigs
 
-    end subroutine
+        do i=1,size(downConfig,2) ! i <=> down electrons                 
+            do j=1,3 ! j <=> directions
+                ! Evaluate d^2/dx_j^2 using finite differences and add it to the laplacian
+                deltaDown(j,i) = eps ! Create a displacement of the ith electron in the jth direction
+                laplacian = laplacian + wavefunction(upBasis, downBasis, upConfig, downConfig + deltaDown) - &
+                                        2*valueAtConfig + &
+                                        wavefunction(upBasis, downBasis, upConfig, downConfig - deltaDown)         
+                deltaDown(j,i) = 0   ! Reset
+            enddo
+        enddo
 
-    ! Sample n electron configurations from a slater determinant
-    ! constructed from the given (spinless) basis states
-    function metroSlaterSpinless(singleParticleBasis, n)
+        laplacian = laplacian / (eps**2)
+        ret = -laplacian*(hbar**2)/(2*mElectron)
+        ret = ret / valueAtConfig ! Calculating *local* kinetic energy
+
+    end function
+
+    ! Sample n configurations from the given wavefunction
+    ! built out of the given basis
+    subroutine metropolis(upBasis, downBasis, wavefunction, n, upConfigs, downConfigs)
     implicit none
-        class(basisState)       :: singleParticleBasis(:)
-        real(prec), allocatable :: metroSlaterSpinless(:,:,:) ! # dim, # electrons, # samples
-        real(prec), allocatable :: config(:,:), newConfig(:,:)
-        integer                 :: n, M, i
+        class(basisState)       :: upBasis(:), downBasis(:)
+        procedure(manyBodyWfn)  :: wavefunction
+        real(prec), allocatable :: upConfigs(:,:,:), downConfigs(:,:,:) ! # dim, # electrons, # samples
+        real(prec), allocatable :: upConfig(:,:), newUpConfig(:,:), downConfig(:,:), newDownConfig(:,:)
+        integer                 :: n, i, N_d, N_u
         real(prec)              :: oldProb, newProb, dx(3), r, theeta, phi
 
-        M = size(singleParticleBasis) ! # electrons = # basis
-        allocate(metroSlaterSpinless(3,M,n))
-        allocate(config(3,M))
-        allocate(newConfig(3,M))
-        config = 0 ! Initial configuration is all electrons at the origin
+        ! Get electron counts
+        N_u = size(upBasis)
+        N_d = size(downBasis)
+        if (N_u + N_d == 0) print *, "Error in metropolis algorithm, no basis!"
+
+        allocate(upConfigs(3,N_u,n))
+        allocate(upConfig(3,N_u))
+        allocate(newUpConfig(3,N_u))
+
+        allocate(downConfigs(3,N_d,n))
+        allocate(downConfig(3,N_d))
+        allocate(newDownConfig(3,N_d))
+
+        ! Initial configuration is all electrons at the origin
+        upConfig = 0
+        downConfig = 0
         
         do i=1,n + metroInit
 
@@ -528,74 +209,84 @@ contains
             dx(2) = r*sin(theeta)*sin(phi)
             dx(3) = r*cos(theeta)
 
-            newConfig = 0
-            newConfig(:,int(rand()*M+1)) = dx
-            newConfig = config + newConfig
+            ! Move up or down electron with probability 0.5
+            if ((N_u > 0) .and. ((rand()<0.5) .or. (N_d==0))) then
+                newUpConfig = 0
+                newUpConfig(:,int(rand()*N_u+1)) = dx
+                newUpConfig = upConfig + newUpConfig       
+            else if (N_d > 0) then
+                newDownConfig = 0
+                newDownConfig(:,int(rand()*N_d+1)) = dx
+                newDownConfig = downConfig + newDownConfig
+            endif
             
             ! Apply the metropolis rejection
-            oldProb = abs(slaterDeterminantSpinless(singleParticleBasis, config))**2
-            newProb = abs(slaterDeterminantSpinless(singleParticleBasis, newConfig))**2
-            if (newProb/oldProb > rand()) config = newConfig
+            oldProb = abs(wavefunction(upBasis, downBasis, upConfig, downConfig))**2
+            newProb = abs(wavefunction(upBasis, downBasis, newUpConfig, newDownConfig))**2
+            if (newProb/oldProb > rand()) then
+                upConfig = newUpConfig
+                downConfig = newDownConfig
+            endif
 
             ! Sample the current config if it's not an intitalization step
-            if (i>metroInit) metroSlaterSpinless(:,:,i-metroInit) = config
-        enddo        
+            if (i>metroInit) then
+                upConfigs(:,:,i-metroInit) = upConfig
+                downConfigs(:,:,i-metroInit) = downConfig
+            endif
+        enddo
+    end subroutine
+
+    ! A simple exponential jastrow factor
+    function jastrowFactor(upConfig, downConfig)
+    implicit none
+        real(prec) :: upConfig(:,:), downConfig(:,:), jastrowFactor, r
+        integer    :: i, j, N_u, N_d
+
+        if (size(upConfig,1) /= 3) print *, "Jastrow factor error: wrong spatial dimension!"
+        if (size(downConfig,1) /= 3) print *, "Jastrow factor error: wrong spatial dimension!"
+    
+        N_u = size(upConfig,2)
+        N_d = size(downConfig,2)
+
+        jastrowFactor = 0
+        
+        ! Calculate same-spin jastrow contributions
+        do i=1,N_u-1
+            do j=i+1,N_u ! i,j <=> up spin pair
+                r = norm2(upConfig(:,i) - upConfig(:,j))/angstrom
+                jastrowFactor = jastrowFactor + r/(1+r)
+            enddo 
+        enddo
+        do i=1,N_d-1
+            do j=i+1,N_d ! i,j <=> down spin pair
+                r = norm2(downConfig(:,i) - downConfig(:,j))/angstrom
+                jastrowFactor = jastrowFactor + r/(1+r)
+            enddo 
+        enddo
+
+        ! Calculate different-spin jastrow contributions
+        do i=1,N_u
+            do j=1,N_d
+                r = norm2(upConfig(:,i) - downConfig(:,j))/angstrom
+                jastrowFactor = jastrowFactor + 0.5*r/(1+r)
+            enddo
+        enddo
+
+        jastrowFactor = exp(jastrowFactor)
 
     end function
 
-    ! Test the metropolis algorithm as applied to slater determinants
-    ! using a 2-particle determinant. Outputs the differnce in x and
-    ! difference in z for the two electrons for each sample.
-    subroutine testMetroSlater(singleParticleBasis, n)
+    ! A slater determinant of two spin species seperates into the product
+    ! of slater determinants of each species (no pauli exclusion between spins)
+    function slaterDeterminant(upBasis, downBasis, upConfig, downConfig) result(ret)
     implicit none
-        class(basisState)       :: singleParticleBasis(2)
-        integer                 :: n, i
-        real(prec)              :: diff(3)
-        real(prec), allocatable :: configs(:,:,:)
-        
-        configs = metroSlaterSpinless(singleParticleBasis, n)
-        open(unit=2,file="output/testMetroSlater")
-        
-        do i=1,size(configs,3)
-            diff = configs(:,1,i) - configs(:,2,i)
-            write (2,*) diff(1),",",diff(3)
-        enddo
-
-        close(unit=2)
-        
-    end subroutine
-
-    ! Test the metropolis algorithm for slater determinants reproduces
-    ! single particle distributions
-    subroutine sampleMetroSlaterToFile(singleParticleBasis, n)
-    implicit none
-        class(basisState)       :: singleParticleBasis(1)
-        integer                 :: n, i
-        real(prec), allocatable :: configs(:,:,:)
-
-        print *, ""
-        print *, "Sampling slater determinant to file..."
-        
-        configs = metroSlaterSpinless(singleParticleBasis, n)
-        open(unit=2,file="output/sampleMetroSlater")
-        
-        ! Output the x, z coordinates of our single particle
-        do i=1,size(configs,3)
-            write (2,*) configs(1,1,i)/angstrom,",",configs(3,1,i)/angstrom
-        enddo
-
-        close(unit=2)
-        
-    end subroutine
-
-    ! A slater determinant of fermions with spins
-    function slaterDeterminant(upStates, downStates, upPositions, downPositions) result(ret)
-    implicit none
-        class(basisState) :: upStates(:), downStates(:)
-        real(prec)        :: upPositions(:,:), downPositions(:,:)
+        class(basisState) :: upBasis(:), downBasis(:)
+        real(prec)        :: upConfig(:,:), downConfig(:,:)
         complex(prec)     :: ret
-        ret = slaterDeterminantSpinless(upStates,upPositions) * &
-              slaterDeterminantSpinless(upStates,upPositions)
+        if (size(upBasis) + size(downBasis)==0) print *, "Error in slaterDeterminant, no basis!"
+        ret = 1
+        if (size(upBasis) > 0)   ret = ret * slaterDeterminantSpinless(upBasis, upConfig)
+        if (size(downBasis) > 0) ret = ret * slaterDeterminantSpinless(downBasis, downConfig)
     end function
 
     ! A slater determinant of the given single particle states, evaluated
@@ -620,6 +311,16 @@ contains
             print *, "Error in calculating a slater determinant: # Electrons /= # Basis States!"
         endif
 
+        if (M == 0) then
+            print *, "Error in slaterDeterminantSpinless: no basis states!"
+        endif
+
+        ! Deal with the single basis case (i.e a 1x1 matrix)
+        if (M == 1) then
+            ret = singleParticleStates(1)%value(electronPositions(:,1))
+            return
+        endif
+
         ! Fill our permutation matrix and parity array
         call permutations(M,perm,sgn)
 
@@ -637,32 +338,6 @@ contains
         ret = ret/sqrt(real(M)) ! Normalization (unneccasary as so far everything else isn't normalized anyway but whatever)
 
     end function
-
-    ! Output data for a plot of the abs(slater determinant)**2
-    ! against electron seperation for the two electron case
-    subroutine testSlaterDetSpinless(basis)
-    implicit none
-        class(basisState) :: basis(2)
-        real(prec)        :: ePos(3,2)
-        complex(prec)     :: w
-        integer           :: i, grid
-        
-        open(unit=2,file="output/testSlaterDet")
-        
-        ! Start electrons on top of one another at the origin
-        ePos = 0
-        
-        grid = 100
-        do i=0,grid
-            ePos(1,1) = 10*angstrom*i/real(grid) ! Move one electron away from origin
-            w = basis(1)%value(ePos(:,1))*basis(2)%value(ePos(:,2)) - &
-                basis(1)%value(ePos(:,2))*basis(2)%value(ePos(:,1))
-            write(2,*) epos(1,1)/angstrom, ",", abs(slaterDeterminantSpinless(basis, ePos)-w)**2
-        enddo
-
-        close(unit=2)
-
-    end subroutine
     
     ! A subroutine that generates the permutaions of a and
     ! stores the result in the factorial(size(a)) x size(a)
@@ -725,18 +400,6 @@ contains
         permutationCPUtime = permutationCPUtime + (endT-startT)
     
     end subroutine
-
-    ! Test the permutation function
-    subroutine testPermutations()
-    implicit none
-        integer, parameter :: s = 3
-        integer :: i
-        integer, allocatable :: p(:,:), sgn(:)
-        call permutations(s,p,sgn)
-        do i=1,factorial(s)
-            print *,i,":", p(i,:), "sgn:",sgn(i)
-        enddo
-    end subroutine
     
     ! Return the factorial of n
     recursive function factorial(n) result(ret)
@@ -757,114 +420,5 @@ contains
         ret = n * factorial(n-1)
 
     end function
-
-    ! Calculate the second derivative of the wavefunction
-    ! in the given direction using finite differences
-    function secondDerivative(basis, coefficients, x, dir)
-        class(basisState) :: basis(:)
-        complex(prec)     :: secondDerivative, coefficients(:)
-        real(prec)        :: x(3), dir(3)
-        real(prec), parameter :: eps = 0.00001 * angstrom
-        dir = eps * dir/norm2(dir)
-        secondDerivative = wavefunction(basis, coefficients, x+dir) - &
-                           2*wavefunction(basis, coefficients, x) + &
-                           wavefunction(basis, coefficients, x-dir)
-        secondDerivative = secondDerivative / (eps**2)
-    end function
-
-    ! Calculate psi^-1(x) T psi(x)
-    function localKineticEnergy(basis, coefficients, x)
-        class(basisState) :: basis(:)
-        real(prec)        :: x(3)
-        complex(prec)     :: dx, dy, dz, localKineticEnergy, coefficients(:)
-        dx = secondDerivative(basis, coefficients, x, real((/1,0,0/), kind=prec))
-        dy = secondDerivative(basis, coefficients, x, real((/0,1,0/), kind=prec))
-        dz = secondDerivative(basis, coefficients, x, real((/0,0,1/), kind=prec))
-        localKineticEnergy = -(hbar**2/(2*mElectron))*(dx + dy + dz)
-        localKineticEnergy = localKineticEnergy/wavefunction(basis, coefficients, x)
-    end function
-
-    ! Calculate the local energy of the given wavefunction
-    ! with the given potential at x
-    function localEnergy(basis, coefficients, potential, x)
-    implicit none
-        class(basisState) :: basis(:)
-        procedure(pot)    :: potential
-        complex(prec)     :: localEnergy, coefficients(:)      
-        real(prec) :: x(3)
-        localEnergy = localKineticEnergy(basis, coefficients, x) + potential(x)
-    end function
-
-    ! Carry out a monte carlo integration of the local energy of the
-    ! wavefunction in the given potential, using the sample positions
-    ! provided
-    subroutine energetics(basis, coefficients, potential, samples, energy, variance)
-    implicit none
-        procedure(pot)             :: potential
-        class(basisState)          :: basis(:)
-        complex(prec)              :: energy, coefficients(:)
-        complex(prec), allocatable :: localEnergies(:)
-        real(prec)                 :: samples(:,:), variance
-        integer                    :: i
-
-        allocate(localEnergies(size(samples,2)))
-
-        ! Calculate the average local energy of our samples
-        energy = 0
-        do i=1, size(localEnergies)
-            localEnergies(i) = localEnergy(basis, coefficients, potential, samples(:,i))
-            energy = energy + localEnergies(i)
-        enddo
-        energy = energy/size(localEnergies)
-
-        ! Calculate the local energy variance of our samples
-        variance = 0
-        do i=1, size(localEnergies)
-            variance = variance + realpart(localEnergies(i)-energy)**2
-        enddo
-        variance = variance/size(localEnergies)
-
-    end subroutine
-
-    ! Get a set of samples using the metropolis algorithm
-    subroutine metro(samples, basis, coefficients)
-    implicit none
-        real(prec) :: newX(3), r, theeta, phi
-        real(prec), allocatable :: x(:), dx(:)
-        class(basisState) :: basis(:)
-        complex(prec)     :: coefficients(:)
-        real(prec) :: samples(:,:)
-        integer    :: i
-
-        ! Initial position is 0
-        allocate(x(size(samples,1)))
-        allocate(dx(size(samples,1)))
-        x = 0
-
-        do i=1,size(samples,2)+metroInit
-
-            ! Move some distance r in any direction
-            theeta = rand()*pi
-            phi    = rand()*2*pi
-            r      = rand()*maxMetroJump
-
-            dx(1) = r*sin(theeta)*cos(phi)
-            dx(2) = r*sin(theeta)*sin(phi)
-            dx(3) = r*cos(theeta)
-
-            newX = x + dx
-            if (rand() < abs(wavefunction(basis,coefficients,newX))**2 / & 
-                        abs(wavefunction(basis,coefficients,x))**2) then
-                x = newX ! Accept the move via metropolis criteria
-            endif
-
-            ! Ensure x doesn't get too close to a divergent origin
-            if (norm2(x) < minR) then
-                x(1) = minR
-            endif
-
-            if (i>metroInit) samples(:,i-metroInit) = x
-        enddo
-    end subroutine
 
 end module vqmc

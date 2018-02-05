@@ -62,7 +62,7 @@ contains
     implicit none  
     integer    :: n, a, k
     real(prec) :: x, ret
-        !print *, n,a,x
+
         if (n == 0) then
             ret = 1
         else if (n == 1) then
