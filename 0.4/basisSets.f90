@@ -162,7 +162,6 @@ contains
 
         ret = sphericalHarmonic(l, m, theeta, phi)
         ret = ret*radialPart(n, l, norm2(x), z)
-        if (ret==0) print *, n, l, m, z, x
 
         call cpu_time(endT)
         atomicCPUtime = atomicCPUtime + (endT - startT)

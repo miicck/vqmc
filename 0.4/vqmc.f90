@@ -48,45 +48,84 @@ implicit none
             real(prec) :: x(3), pot
         end function
 
-        ! A method of taking a single particle basis and
-        ! electronic positions and returning
-        ! a complex amplitude (slater, slater-jastrow etc...)
-        function manyBodyWfn(upBasis, downBasis, upConfig, downConfig)
+        ! Takes our electron positions (up, down) and
+        ! returns a complex amplitude
+        function manyBodyWfn(upConfig, downConfig)
             import
             real(prec) :: upConfig(:,:), downConfig(:,:)
             complex(prec) :: manyBodyWfn
-            class(basisState) :: upBasis(:), downBasis(:)
         end function
+
+        ! How we assign electron character
+        subroutine charAssign()
+            import
+        end subroutine
     end interface
+
+    ! Container for basisState pointers !FORTRAN
+    type basisListElm
+        class(basisState), pointer :: state
+        real(prec) :: centre(3) = 0
+    end type
+
+    ! Elements definining the calculation to carry out
+    type(basisListElm), allocatable         :: basis(:)
+    integer                                 :: upElectrons = 0, downElectrons = 0
+    real(prec), allocatable                 :: upCharacters(:,:), downCharacters(:,:)
+    procedure(manyBodyWfn), pointer         :: manyBodyMethod   => slaterJastrow
+    procedure(pot), pointer                 :: potential        => null()
+    procedure(charAssign), pointer          :: initialCharacter => sequentialCharacter
 
 contains
 
-    ! Use monte carlo integration to get the energetics of the given wavefunction in the given potential
-    subroutine monteCarloEnergetics(upBasis, downBasis, wavefunction, potential, numConfigs, energy)
+    ! Initialize the program
+    subroutine initialize()
     implicit none
-        class(basisState)       :: upBasis(:), downBasis(:)
-        procedure(manyBodyWfn)  :: wavefunction
-        procedure(pot)          :: potential
+        ! Carry out initial checks
+        if (upElectrons < 0) print *, "Error: upElectrons < 0!"
+        if (downElectrons < 0) print *, "Error: downElectrons < 0!"
+        if (upElectrons + downElectrons == 0) print *, "Error: no electrons!"
+        if (.not. associated(potential)) print *, "Error: no potential!"
+
+        ! Carry out initialization
+        call initialCharacter()
+    end subroutine
+
+    ! Clean up memeory after run
+    subroutine cleanUp()
+    implicit none
+        ! Clean up memory from previous run
+        if (allocated(upCharacters)) deallocate(upCharacters)
+        if (allocated(downCharacters)) deallocate(downCharacters)
+        if (allocated(basis)) deallocate(basis)
+
+        ! Reset default parameters
+        potential => null()
+        initialCharacter => sequentialCharacter
+        manyBodyMethod   => slaterJastrow
+        upElectrons = 0
+        downElectrons = 0
+    end subroutine
+
+    ! Use monte carlo integration to get the energetics of the given wavefunction in the given potential
+    subroutine monteCarloEnergetics(numConfigs, energy)
+    implicit none
         real(prec), allocatable :: upPos(:,:,:), downPos(:,:,:), allPos(:,:,:)
         integer                 :: i, j, i2, j2, numConfigs, N_u, N_d
         complex(prec)           :: energy
-        real(prec)              :: dr(3)
-
-        N_u = size(upBasis)   ! # up electrons   = # up states
-        N_d = size(downBasis) ! # down electrons = # down states
-        energy = 0
-
-        if ((N_u == 0) .and. (N_d == 0)) then
-            print *, "Error, no basis states given for monte carlo energetics!"
-        endif
+        real(prec)              :: dr(3)      
 
         ! Allocate/fill our arrays
-        call metropolis(upBasis, downBasis, wavefunction, numConfigs, upPos, downPos) ! Fill array of up/down electron positions
+        call metropolis(numConfigs, upPos, downPos)     ! Fill array of up/down electron positions
+
+        N_u = size(upPos, 2)                            ! # up electrons
+        N_d = size(downPos, 2)                          ! # down electrons
         allocate(allPos(3, N_u + N_d, numConfigs))      ! Array of all electron positions
         if (N_d > 0) allPos(:,1:N_d,:) = downPos        ! Fill the down part of allPos
         if (N_u > 0) allPos(:,N_d+1:N_d+N_u,:) = upPos  ! Fill the up part of allPos
 
         ! Perform monte carlo integration
+        energy = 0
         do i=1,numConfigs
 
             ! Sum potentials for all electrons
@@ -95,7 +134,7 @@ contains
             enddo
             
             ! Add kinetic energy of up and down electrons
-            energy = energy + localKinetic(upBasis, downBasis, wavefunction, upPos(:,:,i), downPos(:,:,i))
+            energy = energy + localKinetic(upPos(:,:,i), downPos(:,:,i))
 
             ! Sum electron - electron coulomb interactions
             do i2=1, N_u + N_d - 1
@@ -114,24 +153,18 @@ contains
     ! Calculate the local kinetic energy of wavefunction
     ! made from the given single particle basis states
     ! evaluated at the given electron configuration
-    function localKinetic(upBasis, downBasis, wavefunction, upConfig, downConfig) result(ret)
+    function localKinetic(upConfig, downConfig) result(ret)
     implicit none
-        class(basisState)       :: upBasis(:), downBasis(:)
-        procedure(manyBodyWfn)  :: wavefunction
         real(prec)              :: upConfig(:,:), downConfig(:,:)
         real(prec), parameter   :: eps = angstrom / 10E4
         real(prec), allocatable :: deltaUp(:,:), deltaDown(:,:)
         complex(prec)           :: laplacian, valueAtConfig, ret
         integer                 :: i, j
 
-        if (size(upBasis)+size(downBasis)==0) Print *, "Error in localKinetic, no basis!"
-        if (size(upConfig,1) /= 3) print *, "Error in localKinetic, wrong spatial dimension for up electrons!"
-        if (size(downConfig,1) /= 3) print *, "Error in localKinetic, wrong spatial dimension for down electrons!"
-
         allocate(deltaUp(size(upConfig,1),size(upConfig,2)))
         allocate(deltaDown(size(downConfig,1),size(downConfig,2)))
 
-        valueAtConfig = wavefunction(upBasis, downBasis, upConfig, downConfig)
+        valueAtConfig = manyBodyMethod(upConfig, downConfig)
 
         ! Calculate laplacian = sum_i(laplacian_i)
         ! where laplacian_i is the laplacian of
@@ -145,9 +178,9 @@ contains
             do j=1,3 ! j <=> directions
                 ! Evaluate d^2/dx_j^2 using finite differences and add it to the laplacian
                 deltaUp(j,i) = eps ! Create a displacement of the ith electron in the jth direction
-                laplacian = laplacian + wavefunction(upBasis, downBasis, upConfig + deltaUp, downConfig) - &
+                laplacian = laplacian + manyBodyMethod(upConfig + deltaUp, downConfig) - &
                                         2*valueAtConfig + &
-                                        wavefunction(upBasis, downBasis, upConfig - deltaUp, downConfig)         
+                                        manyBodyMethod(upConfig - deltaUp, downConfig)         
                 deltaUp(j,i) = 0   ! Reset
             enddo
         enddo
@@ -156,9 +189,9 @@ contains
             do j=1,3 ! j <=> directions
                 ! Evaluate d^2/dx_j^2 using finite differences and add it to the laplacian
                 deltaDown(j,i) = eps ! Create a displacement of the ith electron in the jth direction
-                laplacian = laplacian + wavefunction(upBasis, downBasis, upConfig, downConfig + deltaDown) - &
+                laplacian = laplacian + manyBodyMethod(upConfig, downConfig + deltaDown) - &
                                         2*valueAtConfig + &
-                                        wavefunction(upBasis, downBasis, upConfig, downConfig - deltaDown)         
+                                        manyBodyMethod(upConfig, downConfig - deltaDown)         
                 deltaDown(j,i) = 0   ! Reset
             enddo
         enddo
@@ -169,21 +202,39 @@ contains
 
     end function
 
+    ! Sample metropolis x, z coordinates to a file for plotting
+    subroutine sampleElectronPositionsToFile(n, electron, isUp)
+    implicit none
+        integer :: i, n, electron
+        logical :: isUp
+        real(prec), allocatable :: upConfigs(:,:,:), downConfigs(:,:,:)
+
+        call metropolis(n, upConfigs, downConfigs)
+        open(unit=2,file="sampledElectronPositions")
+
+        if (isUp) then
+            do i=1,size(upConfigs,3)
+                write(2,*) upConfigs(1,electron,i),",",upConfigs(3,electron,i)
+            enddo
+        else        
+            do i=1,size(downConfigs,3)
+                write(2,*) downConfigs(1,electron,i),",",downConfigs(3,electron,i)
+            enddo
+        endif
+
+    end subroutine
+
     ! Sample n configurations from the given wavefunction
     ! built out of the given basis
-    subroutine metropolis(upBasis, downBasis, wavefunction, n, upConfigs, downConfigs)
+    subroutine metropolis(n, upConfigs, downConfigs)
     implicit none
-        class(basisState)       :: upBasis(:), downBasis(:)
-        procedure(manyBodyWfn)  :: wavefunction
         real(prec), allocatable :: upConfigs(:,:,:), downConfigs(:,:,:) ! # dim, # electrons, # samples
         real(prec), allocatable :: upConfig(:,:), newUpConfig(:,:), downConfig(:,:), newDownConfig(:,:)
         integer                 :: n, i, N_d, N_u
         real(prec)              :: oldProb, newProb
 
-        ! Get electron counts
-        N_u = size(upBasis)
-        N_d = size(downBasis)
-        if (N_u + N_d == 0) print *, "Error in metropolis algorithm, no basis!"
+        N_u = upElectrons
+        N_d = downElectrons
 
         allocate(upConfigs(3,N_u,n))
         allocate(upConfig(3,N_u))
@@ -213,8 +264,8 @@ contains
             endif
             
             ! Apply the metropolis rejection
-            oldProb = abs(wavefunction(upBasis, downBasis, upConfig, downConfig))**2
-            newProb = abs(wavefunction(upBasis, downBasis, newUpConfig, newDownConfig))**2
+            oldProb = abs(manyBodyMethod(upConfig, downConfig))**2
+            newProb = abs(manyBodyMethod(newUpConfig, newDownConfig))**2
             if ((oldProb == 0) .or. (newProb/oldProb > rand())) then
                 upConfig = newUpConfig
                 downConfig = newDownConfig
@@ -245,6 +296,56 @@ contains
         n = int(rand()*size(config,2)+1)
         config(:,n) = config(:,n) + dx
     end subroutine
+
+    ! Assign each electron to a basis sequentially
+    ! kind of like the aufbau principle, but in the
+    ! order which the basis states were given to the
+    ! program
+    subroutine sequentialCharacter()
+    implicit none
+    integer :: j
+
+        if (size(basis)<upElectrons) print *, "Error: could not construct sequential character, too many up electrons!"
+        if (size(basis)<downElectrons) print *, "Error: could not construct sequential character, too many down electrons!"
+
+        allocate(upCharacters(size(basis),upElectrons))     !M_ij = jth electrons ith basis character
+        allocate(downCharacters(size(basis),downElectrons))
+        
+        upCharacters = 0
+        downCharacters = 0
+        
+        ! Put the jth up electron in the jth basis state (Aufbau-like)
+        do j=1, upElectrons
+            upCharacters(j,j) = 1
+        enddo
+
+        ! Same for down electrons
+        do j=1, downElectrons
+            downCharacters(j,j) = 1
+        enddo        
+    end subroutine
+
+    ! Our electronic characters have been explicitly constructed
+    subroutine explicitCharacter()
+    implicit none
+        ! Don't need to do anything!
+    end subroutine
+
+    ! The single particle electron state of the nth electron
+    ! as described by the electron characters given
+    function singleParticleState(n, characters, x) result(ret)
+    implicit none
+        integer    :: n, i
+        logical    :: isUp
+        real(prec) :: x(3), characters(:,:)
+        complex(prec) :: ret
+
+        ret = 0
+        do i=1,size(basis)
+            ret = ret + characters(i,n)*basis(i)%state%value(x-basis(i)%centre)
+        enddo
+
+    end function
 
     ! A simple exponential jastrow factor
     function jastrowFactor(upConfig, downConfig)
@@ -287,57 +388,49 @@ contains
     end function
 
     ! A slater determinant combined with a jastrow factor
-    function slaterJastrow(upBasis, downBasis, upConfig, downConfig) result(ret)
+    function slaterJastrow(upConfig, downConfig) result(ret)
     implicit none
-        class(basisState) :: upBasis(:), downBasis(:)
         real(prec)        :: upConfig(:,:), downConfig(:,:)
         complex(prec)     :: ret
-            ret = slaterDeterminant(upBasis, downBasis, upConfig, downConfig) * &
+            ret = slaterDeterminant(upConfig, downConfig) * &
                   jastrowFactor(upConfig, downConfig)
     end function
 
     ! A slater determinant of two spin species seperates into the product
     ! of slater determinants of each species (no pauli exclusion between spins)
-    function slaterDeterminant(upBasis, downBasis, upConfig, downConfig) result(ret)
+    function slaterDeterminant(upConfig, downConfig) result(ret)
     implicit none
-        class(basisState) :: upBasis(:), downBasis(:)
         real(prec)        :: upConfig(:,:), downConfig(:,:)
         complex(prec)     :: ret
-        if (size(upBasis) + size(downBasis)==0) print *, "Error in slaterDeterminant, no basis!"
         ret = 1
-        if (size(upBasis)>0) ret = ret * slaterDeterminantSpinless(upBasis, upConfig)
-        if (size(downBasis)>0) ret = ret * slaterDeterminantSpinless(downBasis, downConfig)
+        if (size(upConfig,2)>0) ret = ret * slaterDeterminantSpinless(upConfig, upCharacters)
+        if (size(downConfig,2)>0) ret = ret * slaterDeterminantSpinless(downConfig, downCharacters)
     end function
 
     ! A slater determinant of the given single particle states, evaluated
     ! at the given electron positions
-    function slaterDeterminantSpinless(singleParticleStates, electronPositions) result(ret)
+    function slaterDeterminantSpinless(config, characters) result(ret)
     implicit none
-        class(basisState)    :: singleParticleStates(:)
-        real(prec)           :: electronPositions(:,:)
+        real(prec)           :: config(:,:), characters(:,:)
         complex(prec)        :: ret, prod, elm
         integer              :: M, i, j
         integer, allocatable :: perm(:,:), sgn(:)
 
-        M = size(singleParticleStates)
+        M = size(config,2)
 
-        if (size(electronPositions,1) /= 3) then
+        if (size(config,1) /= 3) then
             print *, "Error in calculating a slater determinant: Spatial dimension incorrect!"
             ret = 0
             return
         endif
 
-        if (size(electronPositions,2) /= M) then
-            print *, "Error in calculating a slater determinant: # Electrons /= # Basis States!"
-        endif
-
         if (M == 0) then
-            print *, "Error in slaterDeterminantSpinless: no basis states!"
+            print *, "Error in slaterDeterminantSpinless: no electrons!"
         endif
 
-        ! Deal with the single basis case (i.e a 1x1 matrix)
+        ! Deal with the single electron case (i.e a 1x1 matrix)
         if (M == 1) then
-            ret = singleParticleStates(1)%value(electronPositions(:,1))
+            ret = singleParticleState(1, characters, config(:,1))
             return
         endif
 
@@ -350,7 +443,7 @@ contains
         do i=1,factorial(M) ! Sum over permutations
             prod = 1
             do j=1,M ! Product over entries of our slater matrix
-                elm = singleParticleStates(j)%value(electronPositions(:,perm(i,j)))
+                elm = singleParticleState(j, characters, config(:,perm(i,j)))
                 prod = prod*elm
             enddo
             ret = ret + sgn(i)*prod

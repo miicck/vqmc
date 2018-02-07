@@ -1,7 +1,7 @@
 import matplotlib.pyplot as plt
 import sys
 
-f, axes = plt.subplots(ncols=len(sys.argv)-1)
+f, axes = plt.subplots(ncols=len(sys.argv))
 
 for n in range(1,len(sys.argv)):
     file = open(sys.argv[n])

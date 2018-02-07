@@ -7,11 +7,11 @@ implicit none
     real(prec) :: startT, endT, time
 
     call cpu_time(startT)
-
+  
     call hydrogen()
-    call helium()
+    call H2plusIon()
+    call H2molecule()
     call beryllium()
-    !call neon() ! Takes a while...
 
     call cpu_time(endT)
     time = endT-startT  
@@ -25,6 +25,7 @@ contains
 
     ! ----- HYDROGEN ----- !
 
+    ! Hydrogen atomic potential
     function hydrogenPotential(x)
     real(prec) :: hydrogenPotential, x(3)
         if (norm2(x)==0) x = (/1,0,0/)*angstrom/10000
@@ -33,52 +34,94 @@ contains
 
     subroutine hydrogen()
     implicit none
-
-        type(atomicState), allocatable :: upBasis(:), downBasis(:)
-        real(prec)    :: startT, endT
         complex(prec) :: energy
+ 
+        ! Setup our basis and many body wavefunction
+        allocate(basis(1))
+        basis(1)%state => atomicState(1,0,0,1)
 
-        ! Basis for hydrogen is 1s (it's ground state)
-        allocate(downBasis(0))     
+        ! Describe our system
+        upElectrons    = 1
+        potential      => hydrogenPotential
 
-        allocate(upBasis(1))
-        upBasis(1) = atomicState(1,0,0,1)
-
-        call cpu_time(startT)
-        call monteCarloEnergetics(upBasis, downBasis, slaterJastrow, hydrogenPotential, ITTER, energy)
-        call cpu_time(endT)
-        print *, "Hydrogen energy:", realpart(energy)/electronVolt, &
-                "eV Calculation took:", (endT-startT), "seconds"
+        call initialize()
+        call monteCarloEnergetics(ITTER, energy)
+        call cleanUp()
+        print *, "Hydrogen energy:", realpart(energy)/electronVolt, "(eV)"
 
     end subroutine
 
-    ! ----- HELIUM ----- !
-
-    function heliumPotential(x)
-    real(prec) :: heliumPotential, x(3)
-        if (norm2(x)==0) x = (/1,0,0/)*angstrom/10000
-        heliumPotential = -2*qElectron**2/(4*pi*epsNaught*norm2(x))
+    ! Hydrogen molecular ion potential
+    function H2plusPotential(x)
+    real(prec) :: H2plusPotential, x(3)
+    real(prec), parameter :: zero = 0, atom2(3) = (/zero,zero,angstrom*1.05687/)
+        H2plusPotential = hydrogenPotential(x) + hydrogenPotential(x-atom2)
     end function
 
-    subroutine helium()
+    subroutine H2plusIon()
     implicit none
-
-        type(atomicState), allocatable :: upBasis(:), downBasis(:)
-        real(prec)    :: startT, endT
         complex(prec) :: energy
 
-        ! Basis for helium 1s^2
-        allocate(upBasis(1))
-        upBasis(1)   = atomicState(1,0,0,2)
+        ! Setup our basis and many body wavefunction
+        allocate(basis(2))
+        basis(1)%state => atomicState(1,0,0,1)
+        basis(2)%state => atomicState(1,0,0,1)
+        basis(2)%centre(3) = angstrom*1.05687
 
-        allocate(downBasis(1))
-        downBasis(1) = atomicState(1,0,0,2)
+        ! Describe our system
+        upElectrons      = 1
+        potential        => H2plusPotential
+        initialCharacter => explicitCharacter ! Use explicit electronic characters
+        
+        allocate(upCharacters(2,1))
+        upCharacters(1,1) = 1
+        upCharacters(2,1) = -1
+        
+        allocate(downCharacters(2,0))
 
-        call cpu_time(startT)
-        call monteCarloEnergetics(upBasis, downBasis, slaterJastrow, heliumPotential, ITTER, energy)
-        call cpu_time(endT)
-        print *, "Helium energy:", realpart(energy)/electronVolt, &
-                "eV Calculation took:", (endT-startT), "seconds"
+        call initialize()
+        call monteCarloEnergetics(ITTER, energy)
+        !call sampleElectronPositionsToFile(ITTER,1,.true.)
+        call cleanUp()        
+        print *, "Hydrogen molecular ion energy:", realpart(energy)/electronVolt, "(eV)"
+
+    end subroutine
+
+    ! Hydrogen molecular potential
+    function H2potential(x)
+    real(prec) :: H2potential, x(3)
+    real(prec), parameter :: zero = 0, atom2(3) = (/zero,zero,angstrom*0.741/)
+        H2potential = hydrogenPotential(x) + hydrogenPotential(x-atom2)
+    end function
+
+    subroutine H2molecule()
+    implicit none
+        complex(prec) :: energy
+
+        ! Setup our basis and many body wavefunction
+        allocate(basis(2))
+        basis(1)%state => atomicState(1,0,0,1)
+        basis(2)%state => atomicState(1,0,0,1)
+        basis(2)%centre(3) = angstrom*0.741
+
+        ! Describe our system
+        upElectrons      = 1
+        downElectrons    = 1
+        potential        => H2potential
+        initialCharacter => explicitCharacter ! Use explicit electronic characters
+        
+        allocate(upCharacters(2,1))
+        upCharacters(1,1) = 1
+        upCharacters(2,1) = -1
+        
+        allocate(downCharacters(2,1))
+        downCharacters(1,1) = 1
+        downCharacters(2,1) = -1
+
+        call initialize()        
+        call monteCarloEnergetics(ITTER, energy)
+        call cleanUp()        
+        print *, "Hydrogen molecule energy:", realpart(energy)/electronVolt, "(eV)"
 
     end subroutine
 
@@ -89,64 +132,25 @@ contains
         if (norm2(x)==0) x = (/1,0,0/)*angstrom/10000
         berylliumPotential = -4*qElectron**2/(4*pi*epsNaught*norm2(x))
     end function
-
+    
     subroutine beryllium()
     implicit none
-        type(atomicState), allocatable :: upBasis(:), downBasis(:)
-        real(prec)    :: startT, endT
         complex(prec) :: energy
 
-        ! Basis for beryllium 1s^2 2s^2
-        allocate(upBasis(2))
-        upBasis(1)   = atomicState(1,0,0,4)
-        upBasis(2)   = atomicState(2,0,0,4)
+        ! Setup our basis and many body wavefunction
+        allocate(basis(2))
+        basis(1)%state => atomicState(1,0,0,4)
+        basis(2)%state => atomicState(2,0,0,4)
 
-        allocate(downBasis(2))
-        downBasis(1) = atomicState(1,0,0,4)
-        downBasis(2) = atomicState(2,0,0,4)
+        ! Describe our system
+        upElectrons    = 2
+        downElectrons  = 2
+        potential      => berylliumPotential
 
-        call cpu_time(startT)
-        call monteCarloEnergetics(upBasis, downBasis, slaterJastrow, berylliumPotential, ITTER, energy)
-        call cpu_time(endT)
-        print *, "Beryllium energy:", realpart(energy)/electronVolt, &
-                 "eV Calculation took:", (endT-startT), "seconds"
-
-    end subroutine
-
-    ! ----- NEON ----- !
-
-    function neonPotential(x)
-    real(prec) :: neonPotential, x(3)
-        if (norm2(x)==0) x = (/1,0,0/)*angstrom/10000
-        neonPotential = -10*qElectron**2/(4*pi*epsNaught*norm2(x))
-    end function
-
-    subroutine neon()
-    implicit none
-        type(atomicState), allocatable :: upBasis(:), downBasis(:)
-        real(prec)    :: startT, endT
-        complex(prec) :: energy
-
-        ! Basis for neon 1s^2 2s^2 2p^6
-        allocate(upBasis(5))
-        upBasis(1)   = atomicState(1,0,0,10)
-        upBasis(2)   = atomicState(2,0,0,10)
-        upBasis(3)   = atomicState(2,1,-1,10)
-        upBasis(4)   = atomicState(2,1,0,10)
-        upBasis(5)   = atomicState(2,1,1,10)
-
-        allocate(downBasis(5))
-        downBasis(1) = atomicState(1,0,0,10)
-        downBasis(2) = atomicState(2,0,0,10)
-        downBasis(3) = atomicState(2,1,-1,10)
-        downBasis(4) = atomicState(2,1,0,10)
-        downBasis(5) = atomicState(2,1,1,10)
-
-        call cpu_time(startT)
-        call monteCarloEnergetics(upBasis, downBasis, slaterJastrow, neonPotential, ITTER, energy)
-        call cpu_time(endT)
-        print *, "Neon energy:", realpart(energy)/electronVolt, &
-                "eV Calculation took:", (endT-startT), "seconds"
+        call initialize()
+        call monteCarloEnergetics(ITTER, energy)
+        call cleanUp()
+        print *, "Beryllium energy:", realpart(energy)/electronVolt, "(eV)"
 
     end subroutine
 
