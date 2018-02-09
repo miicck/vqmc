@@ -8,12 +8,6 @@ use constants
 !use IFPORT
 implicit none
 
-    ! Parameters controlling our vqmc simulation
-    integer,    parameter :: metroSamples = 100000     ! The number of metropolis electron configurations that are used
-    real(prec), parameter :: minR = angstrom/10000     ! The minimum distance e's are alowed from nucleii
-    real(prec), parameter :: maxMetroJump = 4*angstrom ! The maximum distance an electron can move in a metropolis trial move
-    integer, parameter    :: metroInit = 1000          ! Number of metropolis steps to take and discard to remove dependance on initial position
-
     real(prec) :: permutationCPUtime = 0
 
     ! An object that can be used as a basis function
@@ -23,7 +17,14 @@ implicit none
         procedure(printStateDebug), deferred :: printDebugInfo
     end type
 
-    abstract interface
+    type :: nucleus
+        real(prec) :: centre(3) = 0
+        real(prec) :: charge = 1
+    contains
+        procedure :: potential => nuclearPotential
+    end type
+
+    interface
 
         ! Interface for basis function
         function basisWfn(this, x)
@@ -39,9 +40,6 @@ implicit none
             class(basisState) :: this
         end subroutine
 
-    end interface
-
-    interface
         ! A potential
         function pot(x)
             import
@@ -69,14 +67,44 @@ implicit none
     end type
 
     ! Elements definining the calculation to carry out
-    type(basisListElm), allocatable         :: basis(:)
-    integer                                 :: upElectrons = 0, downElectrons = 0
-    real(prec), allocatable                 :: upCharacters(:,:), downCharacters(:,:)
-    procedure(manyBodyWfn), pointer         :: manyBodyMethod   => slaterJastrow
-    procedure(pot), pointer                 :: potential        => null()
-    procedure(charAssign), pointer          :: initialCharacter => sequentialCharacter
+    type(basisListElm), allocatable :: basis(:)
+    class(nucleus), allocatable     :: nucleii(:)
+    integer                         :: upElectrons = 0, downElectrons = 0
+    real(prec), allocatable         :: upCharacters(:,:), downCharacters(:,:)
+    procedure(manyBodyWfn), pointer :: manyBodyMethod   => slaterJastrow
+    procedure(charAssign), pointer  :: initialCharacter => sequentialCharacter
+    integer                         :: metroSamples = 10000
+    integer                         :: initMetroSamples = 1000
+    integer                         :: reblockingLength = 1000
+    real(prec)                      :: maxMetroJump = 4*angstrom ! The maximum distance an electron can move in a metropolis trial move
+    complex(prec)                   :: mcEnergyLast = 0
+    complex(prec)                   :: mcKineticEnergyLast = 0
+    complex(prec)                   :: mcPotentialEnergyLast = 0
+    complex(prec)                   :: mcReblockedVarianceLast = 0
+    complex(prec)                   :: mcEnergyErrorLast = 0
+    complex(prec)                   :: mcNuclearEnergyLast = 0
+    real(prec)                      :: energyUnit = electronVolt
 
 contains
+
+    ! A nuclear potential
+    function nuclearPotential(this, x) result(ret)
+    implicit none
+        class(nucleus) :: this
+        real(prec)     :: x(3), ret
+        ret = -this%charge*(qElectron**2)/(4*pi*epsNaught*norm2(x-this%centre))
+    end function
+
+    ! The potential of our system
+    function potential(x) result(ret)
+    implicit none
+        real(prec) :: ret, x(3)
+        integer    :: i
+        ret = 0
+        do i=1,size(nucleii)
+            ret = ret + nucleii(i)%potential(x)
+        enddo
+    end function
 
     ! Initialize the program
     subroutine initialize()
@@ -85,7 +113,6 @@ contains
         if (upElectrons < 0) print *, "Error: upElectrons < 0!"
         if (downElectrons < 0) print *, "Error: downElectrons < 0!"
         if (upElectrons + downElectrons == 0) print *, "Error: no electrons!"
-        if (.not. associated(potential)) print *, "Error: no potential!"
 
         ! Carry out initialization
         call initialCharacter()
@@ -98,57 +125,127 @@ contains
         if (allocated(upCharacters)) deallocate(upCharacters)
         if (allocated(downCharacters)) deallocate(downCharacters)
         if (allocated(basis)) deallocate(basis)
+        if (allocated(nucleii)) deallocate(nucleii)
 
         ! Reset default parameters
-        potential => null()
         initialCharacter => sequentialCharacter
         manyBodyMethod   => slaterJastrow
         upElectrons = 0
         downElectrons = 0
     end subroutine
 
-    ! Use monte carlo integration to get the energetics of the given wavefunction in the given potential
-    subroutine monteCarloEnergetics(numConfigs, energy)
+    ! Print the results of the last monteCarloEnergetics call
+    subroutine printLastEnergetics()
     implicit none
-        real(prec), allocatable :: upPos(:,:,:), downPos(:,:,:), allPos(:,:,:)
-        integer                 :: i, j, i2, j2, numConfigs, N_u, N_d
-        complex(prec)           :: energy
-        real(prec)              :: dr(3)      
+        print *, ""
+        print *, "Energy:", realpart(mcEnergyLast)/energyUnit
+        print *, "     of which electron kinetic:  ", realpart(mcKineticEnergyLast)/energyUnit
+        print *, "     of which electron Potential:", realpart(mcPotentialEnergyLast)/energyUnit
+        print *, "     of which nuclear:           ", realpart(mcNuclearEnergyLast)/energyUnit
+        print *, "Standard error in energy:", realpart(mcEnergyErrorLast)/(energyUnit)
+        print *, "Reblocked variance:", realpart(mcReblockedVarianceLast)/(energyUnit**2) 
+    end subroutine
+
+    ! Use monte carlo integration to get the energetics of the given wavefunction in the given potential
+    subroutine monteCarloEnergetics()
+    implicit none
+        real(prec), allocatable    :: upPos(:,:,:), downPos(:,:,:), allPos(:,:,:)
+        integer                    :: i, j, i2, j2, N_u, N_d
+        complex(prec)              :: energy, kineticEnergy, potentialEnergy, nuclearEnergy
+        complex(prec), allocatable :: localEnergies(:), localKineticEnergies(:), localPotentialEnergies(:)
+        real(prec)                 :: dr(3)      
 
         ! Allocate/fill our arrays
-        call metropolis(numConfigs, upPos, downPos)     ! Fill array of up/down electron positions
+        call metropolis(upPos, downPos)     ! Fill array of up/down electron positions
 
         N_u = size(upPos, 2)                            ! # up electrons
         N_d = size(downPos, 2)                          ! # down electrons
-        allocate(allPos(3, N_u + N_d, numConfigs))      ! Array of all electron positions
+        allocate(allPos(3, N_u + N_d, metroSamples))    ! Array of all electron positions
         if (N_d > 0) allPos(:,1:N_d,:) = downPos        ! Fill the down part of allPos
         if (N_u > 0) allPos(:,N_d+1:N_d+N_u,:) = upPos  ! Fill the up part of allPos
+        allocate(localEnergies(metroSamples))
+        allocate(localKineticEnergies(metroSamples))
+        allocate(localPotentialEnergies(metroSamples))
 
         ! Perform monte carlo integration
         energy = 0
-        do i=1,numConfigs
+        potentialEnergy = 0
+        kineticEnergy = 0
+        do i=1,metroSamples
+
+            localEnergies(i) = 0
+            localKineticEnergies(i) = 0
+            localPotentialEnergies(i) = 0
 
             ! Sum potentials for all electrons
             do j=1,N_u + N_d
-                energy = energy + potential(allPos(:,j,i))
+                localPotentialEnergies(i) = localPotentialEnergies(i) + potential(allPos(:,j,i))
             enddo
-            
-            ! Add kinetic energy of up and down electrons
-            energy = energy + localKinetic(upPos(:,:,i), downPos(:,:,i))
 
             ! Sum electron - electron coulomb interactions
             do i2=1, N_u + N_d - 1
                 do j2=i2+1, N_u + N_d
                     dr = allPos(:,i2,i) - allPos(:,j2,i)
-                    energy = energy + qElectron**2/(4*pi*epsNaught*norm2(dr))
+                    localPotentialEnergies(i) = localPotentialEnergies(i) + qElectron**2/(4*pi*epsNaught*norm2(dr))
                 enddo
             enddo
+            
+            ! Add kinetic energy of up and down electrons
+            localKineticEnergies(i) = localKinetic(upPos(:,:,i), downPos(:,:,i))
+            localEnergies(i) = localKineticEnergies(i) + localPotentialEnergies(i)
+
+            potentialEnergy = potentialEnergy + localPotentialEnergies(i)
+            kineticEnergy = kineticEnergy + localKineticEnergies(i)
+            energy = energy + localEnergies(i)
 
         enddo
 
-        energy = energy/real(numConfigs)
+        mcKineticEnergyLast = kineticEnergy/real(metroSamples)
+        mcPotentialEnergyLast = potentialEnergy/real(metroSamples)
+        mcEnergyLast = energy/real(metroSamples)
+        mcReblockedVarianceLast = reblockedVariance(localEnergies, mcEnergyLast)
+        mcEnergyErrorLast = sqrt(mcReblockedVarianceLast/real(metroSamples/reblockingLength))
+
+        ! Add the nuclear energy, it's the same regardless of electron config
+        do i=1,size(nucleii)-1
+            do j=i+1,size(nucleii)
+                ! N.B nuclear potental assumes it's given an electron, modify it for nuclear-nuclear interactions
+                nuclearEnergy = -nucleii(i)%potential(nucleii(j)%centre)*nucleii(j)%charge
+            enddo
+        enddo
+
+        mcEnergyLast = mcEnergyLast + nuclearEnergy
+        mcNuclearEnergyLast = nuclearEnergy
 
     end subroutine
+
+    ! Get the reblocked variance of a set of local energies
+    function reblockedVariance(localEnergies, energy)
+    implicit none
+        complex(prec) :: localEnergies(:), reblockedVariance, energy
+        complex(prec), allocatable :: blockAverages(:)
+        integer :: i, j, numBlocks, k
+
+        numBlocks = metroSamples/reblockingLength
+        allocate(blockAverages(numBlocks))
+
+        do i=1,numBlocks
+            blockAverages(i) = 0
+            do j=1,reblockingLength
+                k = (i-1)*reblockingLength + j
+                blockAverages(i) = blockAverages(i) + localEnergies(k)
+            enddo
+            blockAverages(i) = blockAverages(i)/reblockingLength
+        enddo
+
+        reblockedVariance = 0
+        do i=1,numBlocks
+            reblockedVariance = reblockedVariance + &
+                (energy - blockAverages(i))**2
+        enddo
+        reblockedVariance = reblockedVariance/(numBlocks-1)
+        
+    end function
 
     ! Calculate the local kinetic energy of wavefunction
     ! made from the given single particle basis states
@@ -203,13 +300,13 @@ contains
     end function
 
     ! Sample metropolis x, z coordinates to a file for plotting
-    subroutine sampleElectronPositionsToFile(n, electron, isUp)
+    subroutine sampleElectronPositionsToFile(electron, isUp)
     implicit none
-        integer :: i, n, electron
+        integer :: i, electron
         logical :: isUp
         real(prec), allocatable :: upConfigs(:,:,:), downConfigs(:,:,:)
 
-        call metropolis(n, upConfigs, downConfigs)
+        call metropolis(upConfigs, downConfigs)
         open(unit=2,file="sampledElectronPositions")
 
         if (isUp) then
@@ -226,21 +323,21 @@ contains
 
     ! Sample n configurations from the given wavefunction
     ! built out of the given basis
-    subroutine metropolis(n, upConfigs, downConfigs)
+    subroutine metropolis(upConfigs, downConfigs)
     implicit none
         real(prec), allocatable :: upConfigs(:,:,:), downConfigs(:,:,:) ! # dim, # electrons, # samples
         real(prec), allocatable :: upConfig(:,:), newUpConfig(:,:), downConfig(:,:), newDownConfig(:,:)
-        integer                 :: n, i, N_d, N_u
+        integer                 :: i, N_d, N_u
         real(prec)              :: oldProb, newProb
 
         N_u = upElectrons
         N_d = downElectrons
 
-        allocate(upConfigs(3,N_u,n))
+        allocate(upConfigs(3,N_u,metroSamples))
         allocate(upConfig(3,N_u))
         allocate(newUpConfig(3,N_u))
 
-        allocate(downConfigs(3,N_d,n))
+        allocate(downConfigs(3,N_d,metroSamples))
         allocate(downConfig(3,N_d))
         allocate(newDownConfig(3,N_d))
 
@@ -248,7 +345,7 @@ contains
         upConfig = 0
         downConfig = 0
         
-        do i=1,n + metroInit
+        do i=1,metroSamples + initMetroSamples
 
             ! Make a metropolis trial move (move one electron
             ! by up to maxMetroJump in a random direction)
@@ -272,9 +369,9 @@ contains
             endif
 
             ! Sample the current config if it's not an intitalization step
-            if (i>metroInit) then
-                upConfigs(:,:,i-metroInit) = upConfig
-                downConfigs(:,:,i-metroInit) = downConfig
+            if (i>initMetroSamples) then
+                upConfigs(:,:,i-initMetroSamples) = upConfig
+                downConfigs(:,:,i-initMetroSamples) = downConfig
             endif
         enddo
     end subroutine

@@ -10,6 +10,7 @@ module constants
         real(prec), parameter :: mProton = 1.672621898E-27
         real(prec), parameter :: epsNaught = 8.854187817620E-12
         real(prec), parameter :: electronVolt = qElectron
+        real(prec), parameter :: hartree = 4.35974465054E-18
         real(prec), parameter :: angstrom = 1E-10
         real(prec), parameter :: a0 = 5.29177E-11 ! Bohr radius
     

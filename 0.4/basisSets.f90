@@ -125,6 +125,7 @@ contains
         radialPart = laguerrePolynomial(n-1-l,2*l+1,2*z*r/(n*a0))
         radialPart = radialPart * (2*z*r/(n*a0))**l
         radialPart = radialPart * exp(-z*r/(a0*n))
+        radialPart = radialPart * sqrt(factorial(n-l-1)*(2*z/real(n*a0))**3/(2*n*factorial(n+l)))
     end function
 
     ! Y_l^m

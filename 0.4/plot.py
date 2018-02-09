@@ -30,9 +30,12 @@ for d in range(0,len(datas)):
     yss.append(ys)
 
 for d in range(0,len(xss)):
-    plt.plot(xss[d],yss[d])
-#plt.ylim(-3,10)
-#plt.xlabel("c1 = 1-c2")
-#plt.ylabel("Energy (eV)")
+    plt.plot(xss[d],yss[d],color="black")
+plt.ylim(-0.6,-0.2)
+#plt.axes().set_yscale("log")
+#plt.xlim(0,10)
+plt.xlabel("Bond length (Å)", fontsize=20)
+plt.ylabel("$E_V$ (Hartree)", fontsize=20)
+plt.tight_layout()
 #plt.axes().set_aspect('equal', 'datalim')
 plt.show()
