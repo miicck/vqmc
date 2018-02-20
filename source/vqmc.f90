@@ -5,6 +5,7 @@
 ! Module that carries out the monte-carlo integration
 module vqmc
 use constants
+use mpi
 !use IFPORT
 implicit none
 
@@ -80,12 +81,12 @@ implicit none
     real(prec)                      :: energyUnit = electronVolt                ! The unit of energy we convert to when outputting information
 
     ! Results stored from the last monte-carlo calculation
-    complex(prec)                   :: mcEnergyLast = 0            ! The calculated energy
-    complex(prec)                   :: mcKineticEnergyLast = 0     ! The kinetic energy
-    complex(prec)                   :: mcPotentialEnergyLast = 0   ! The potential energy
-    complex(prec)                   :: mcNuclearEnergyLast = 0     ! The nuclear energy (i.e nuclear-nuclear interactions)
-    complex(prec)                   :: mcReblockedVarianceLast = 0 ! The reblocked energy variance
-    complex(prec)                   :: mcEnergyErrorLast = 0       ! The estimated error on the energy
+    real(prec)                   :: mcEnergyLast = 0            ! The calculated energy
+    real(prec)                   :: mcKineticEnergyLast = 0     ! The kinetic energy
+    real(prec)                   :: mcPotentialEnergyLast = 0   ! The potential energy
+    real(prec)                   :: mcNuclearEnergyLast = 0     ! The nuclear energy (i.e nuclear-nuclear interactions)
+    real(prec)                   :: mcReblockedVarianceLast = 0 ! The reblocked energy variance
+    real(prec)                   :: mcEnergyErrorLast = 0       ! The estimated error on the energy
     
     ! Variational parameters in our jastrow factor
     real(prec), allocatable         :: jastrowUU(:,:) ! Up - Up
@@ -165,23 +166,27 @@ contains
     ! Print the results of the last monteCarloEnergetics call
     subroutine printLastEnergetics()
     implicit none
+        integer :: rank, ierr
+        call mpi_comm_rank(mpi_comm_world, rank, ierr)
+        if (rank /= 0) return
         print *, ""
-        print *, "Energy:", realpart(mcEnergyLast)/energyUnit
-        print *, "     of which electron kinetic:  ", realpart(mcKineticEnergyLast)/energyUnit
-        print *, "     of which electron Potential:", realpart(mcPotentialEnergyLast)/energyUnit
-        print *, "     of which nuclear:           ", realpart(mcNuclearEnergyLast)/energyUnit
-        print *, "Standard error in energy:", realpart(mcEnergyErrorLast)/(energyUnit)
-        print *, "Reblocked variance:", realpart(mcReblockedVarianceLast)/(energyUnit**2) 
+        print *, "Energy:", mcEnergyLast/energyUnit
+        print *, "     of which electron kinetic:  ", mcKineticEnergyLast/energyUnit
+        print *, "     of which electron Potential:", mcPotentialEnergyLast/energyUnit
+        print *, "     of which nuclear:           ", mcNuclearEnergyLast/energyUnit
+        print *, "Standard error in energy:", mcEnergyErrorLast/(energyUnit)
+        print *, "Reblocked variance:", mcReblockedVarianceLast/(energyUnit**2) 
     end subroutine
 
     ! Use monte carlo integration to get the energetics of the given wavefunction in the given potential
     subroutine monteCarloEnergetics()
     implicit none
         real(prec), allocatable    :: upPos(:,:,:), downPos(:,:,:), allPos(:,:,:)
-        integer                    :: i, j, i2, j2, N_u, N_d
-        complex(prec)              :: energy, kineticEnergy, potentialEnergy, nuclearEnergy
-        complex(prec), allocatable :: localEnergies(:), localKineticEnergies(:), localPotentialEnergies(:)
-        real(prec)                 :: dr(3)      
+        integer                    :: i, j, i2, j2, N_u, N_d, rank, nproc, ierr
+        real(prec)                 :: energy, kineticEnergy, potentialEnergy, nuclearEnergy
+        real(prec)                 :: mpiEnergy, mpiKinetic, mpiPotential, mpiNuclear
+        real(prec), allocatable    :: localEnergies(:), localKineticEnergies(:), localPotentialEnergies(:)
+        real(prec)                 :: dr(3)
 
         ! Allocate/fill our arrays
         call metropolis(upPos, downPos)     ! Fill array of up/down electron positions
@@ -194,6 +199,9 @@ contains
         allocate(localEnergies(metroSamples))
         allocate(localKineticEnergies(metroSamples))
         allocate(localPotentialEnergies(metroSamples))
+
+        call mpi_comm_rank(mpi_comm_world, rank, ierr)
+        call mpi_comm_size(mpi_comm_world, nproc, ierr)
 
         ! Perform monte carlo integration
         energy = 0
@@ -234,6 +242,16 @@ contains
         mcReblockedVarianceLast = reblockedVariance(localEnergies, mcEnergyLast)
         mcEnergyErrorLast = sqrt(mcReblockedVarianceLast/real(metroSamples/reblockingLength))
 
+        ! Calculate the averages across processes
+        call mpi_reduce(mcEnergyLast, mpiEnergy, 1, mpi_double_precision, mpi_sum, 0, mpi_comm_world, ierr)
+        call mpi_reduce(mcKineticEnergyLast, mpiKinetic, 1, mpi_double_precision, mpi_sum, 0, mpi_comm_world, ierr)
+        call mpi_reduce(mcPotentialEnergyLast, mpiPotential, 1, mpi_double_precision, mpi_sum, 0, mpi_comm_world, ierr)
+        if (rank == 0) then
+            mcEnergyLast = mpiEnergy/nproc
+            mcKineticEnergyLast = mpiKinetic/nproc
+            mcPotentialEnergyLast = mpiPotential/nproc
+        endif
+
         ! Add the nuclear energy, it's the same regardless of electron config
         nuclearEnergy = 0
         do i=1,size(nucleii)-1
@@ -251,8 +269,8 @@ contains
     ! Get the reblocked variance of a set of local energies
     function reblockedVariance(localEnergies, energy)
     implicit none
-        complex(prec) :: localEnergies(:), reblockedVariance, energy
-        complex(prec), allocatable :: blockAverages(:)
+        real(prec) :: localEnergies(:), reblockedVariance, energy
+        real(prec), allocatable :: blockAverages(:)
         integer :: i, j, numBlocks, k
 
         numBlocks = metroSamples/reblockingLength
@@ -284,13 +302,13 @@ contains
         real(prec)              :: upConfig(:,:), downConfig(:,:)
         real(prec), parameter   :: eps = angstrom / 10E4
         real(prec), allocatable :: deltaUp(:,:), deltaDown(:,:)
-        complex(prec)           :: laplacian, valueAtConfig, ret
+        real(prec)              :: laplacian, valueAtConfig, ret
         integer                 :: i, j
 
         allocate(deltaUp(size(upConfig,1),size(upConfig,2)))
         allocate(deltaDown(size(downConfig,1),size(downConfig,2)))
 
-        valueAtConfig = manyBodyMethod(upConfig, downConfig)
+        valueAtConfig = realpart(manyBodyMethod(upConfig, downConfig))
 
         ! Calculate laplacian = sum_i(laplacian_i)
         ! where laplacian_i is the laplacian of
@@ -304,9 +322,9 @@ contains
             do j=1,3 ! j <=> directions
                 ! Evaluate d^2/dx_j^2 using finite differences and add it to the laplacian
                 deltaUp(j,i) = eps ! Create a displacement of the ith electron in the jth direction
-                laplacian = laplacian + manyBodyMethod(upConfig + deltaUp, downConfig) - &
+                laplacian = laplacian + realpart(manyBodyMethod(upConfig + deltaUp, downConfig) - &
                                         2*valueAtConfig + &
-                                        manyBodyMethod(upConfig - deltaUp, downConfig)         
+                                        manyBodyMethod(upConfig - deltaUp, downConfig))      
                 deltaUp(j,i) = 0   ! Reset
             enddo
         enddo
@@ -315,9 +333,9 @@ contains
             do j=1,3 ! j <=> directions
                 ! Evaluate d^2/dx_j^2 using finite differences and add it to the laplacian
                 deltaDown(j,i) = eps ! Create a displacement of the ith electron in the jth direction
-                laplacian = laplacian + manyBodyMethod(upConfig, downConfig + deltaDown) - &
+                laplacian = laplacian + realpart(manyBodyMethod(upConfig, downConfig + deltaDown) - &
                                         2*valueAtConfig + &
-                                        manyBodyMethod(upConfig, downConfig - deltaDown)         
+                                        manyBodyMethod(upConfig, downConfig - deltaDown))   
                 deltaDown(j,i) = 0   ! Reset
             enddo
         enddo
@@ -535,7 +553,7 @@ contains
         integer :: i
         do i=1,10
             call monteCarloEnergetics()
-            print *, "Energy: ", realpart(mcEnergyLast)/energyUnit, "error", mcEnergyErrorLast/energyUnit
+            print *, "Energy: ", mcEnergyLast/energyUnit, "error", mcEnergyErrorLast/energyUnit
         enddo
     end subroutine
 

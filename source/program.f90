@@ -1,15 +1,27 @@
 program main
 use vqmc
 use atomicBasis
+use mpi
 implicit none
 
     real(prec) :: startT, endT, time
     real(prec) :: h2plusBondLength = angstrom*1.05687
+    integer    :: ierr, i, rank, nproc, clock
 
+    call mpi_init(ierr)
+
+    ! Set a different random seed for each mpi process.
+    ! Also randomize the time via the clock so different
+    ! runs will give (hopefully slightly) different answers
+    call mpi_comm_rank(mpi_comm_world, rank, ierr)
+    call mpi_comm_size(mpi_comm_world, nproc, ierr)
+    call system_clock(clock)
+    call srand(rank+clock)
+    if (rank == 0) call cpu_time(startT)
+
+    ! Carry out our calculation
     energyUnit = hartree
-    metroSamples = 10000
-
-    call cpu_time(startT)
+    metroSamples = 100000/nproc
   
     !call hydrogen()
     !call hydrogen1s2sMixing()
@@ -18,14 +30,18 @@ implicit none
     call helium()
     !call beryllium()
 
-    call cpu_time(endT)
-    time = endT-startT  
+    ! Output performance info for rank 0
+    if (rank == 0) then
+        call cpu_time(endT)
+        time = endT-startT    
+        print *, ""
+        print *, "Performance information for mpi rank 0, total time: ",time, "seconds"
+        print *, "    CPU calculating atomic states: ", 100*atomicCPUtime/time, "%"
+        print *, "    CPU calculating permutations : ", 100*permutationCPUtime/time, "%"      
+    endif
 
-    print *, ""
-    print *, "Performance information, total time: ",time, "seconds"
-    print *, "    CPU calculating atomic states: ", 100*atomicCPUtime/time, "%"
-    print *, "    CPU calculating permutations : ", 100*permutationCPUtime/time, "%"
-
+    ! End mpi session
+    call mpi_finalize(ierr)
 contains
 
     ! ----- HYDROGEN ----- !
@@ -48,7 +64,6 @@ contains
         call initialize()
         call monteCarloEnergetics()
         call cleanUp()
-        print *, "Hydrogen"
         call printLastEnergetics()
 
     end subroutine
@@ -58,11 +73,15 @@ contains
     implicit none
 
         real(prec) :: c = 0
-        integer    :: i, grid, n, nMax, b
+        integer    :: i, grid, n, nMax, b, rank, ierr
 
-        open(unit=2,file="hydrogenMixingEnergies")
-        open(unit=3,file="hydrogenMixingVariances")
-        open(unit=4,file="hydrogenMixingErrors")
+        call mpi_comm_rank(mpi_comm_world, rank, ierr)
+
+        if (rank==0) then
+            open(unit=2,file="hydrogenMixingEnergies")
+            open(unit=3,file="hydrogenMixingVariances")
+            open(unit=4,file="hydrogenMixingErrors")
+        endif
 
         grid = 20
         nMax = 10
@@ -92,16 +111,22 @@ contains
                 call initialize()
                 call monteCarloEnergetics()
                 call cleanUp()
-                print *, "Hydrogen mixing progress:",100*((n-1+c)/real(nMax-1)),"%"
-                write(2,*) n+c,",",realpart(mcEnergyLast)/energyUnit
-                write(3,*) n+c,",",realpart(mcReblockedVarianceLast)/(energyUnit**2)
-                write(4,*) n+c,",",realpart(mcEnergyErrorLast)/(energyUnit**2)
+
+                if (rank == 0) then
+                    print *, "Hydrogen mixing progress:",100*((n-1+c)/real(nMax-1)),"%"
+                    write(2,*) n+c,",",mcEnergyLast/energyUnit
+                    write(3,*) n+c,",",mcReblockedVarianceLast/(energyUnit**2)
+                    write(4,*) n+c,",",mcEnergyErrorLast/(energyUnit**2)
+                endif
 
             enddo
         enddo
-        close(unit=2)
-        close(unit=3)
-        close(unit=4)
+        
+        if (rank == 0) then
+            close(unit=2)
+            close(unit=3)
+            close(unit=4)
+        endif
     end subroutine
 
     subroutine H2plusIon()
@@ -141,10 +166,14 @@ contains
     subroutine H2plusIonBondLength()
     implicit none
         complex(prec) :: energy
-        integer :: i, grid
+        integer :: i, grid, rank, ierr
+        call mpi_comm_rank(mpi_comm_world, rank, ierr)
 
-        open(unit=2,file="H2ionEnergyVsBondLength")
-        open(unit=3,file="H2ionVarianceVsBondLength")
+        if (rank == 0) then
+            open(unit=2,file="H2ionEnergyVsBondLength")
+            open(unit=3,file="H2ionVarianceVsBondLength")
+        endif
+
         grid = 500
         do i=0,grid
 
@@ -177,11 +206,16 @@ contains
             call monteCarloEnergetics()
             call cleanUp()
 
-            write (2,*) h2plusBondLength/angstrom, ",", realpart(mcEnergyLast)/energyUnit
-            write (3,*) h2plusBondLength/angstrom, ",", realpart(mcReblockedVarianceLast)/energyUnit
+            if (rank == 0) then
+                write (2,*) h2plusBondLength/angstrom, ",", mcEnergyLast/energyUnit
+                write (3,*) h2plusBondLength/angstrom, ",", mcReblockedVarianceLast/energyUnit
+            endif
         enddo
-        close(unit=2)
-        close(unit=3)
+
+        if (rank == 0) then
+            close(unit=2)
+            close(unit=3)
+        endif
     
     end subroutine
 
@@ -211,7 +245,6 @@ contains
         call initialize()        
         call monteCarloEnergetics()
         call cleanUp()        
-        print *, "H2 Molecule"
         call printLastEnergetics()
 
     end subroutine
@@ -235,7 +268,6 @@ contains
         call initialize()
         !call optimizeJastrow()
         call monteCarloEnergetics()
-        print *, "Helium"
         call printLastEnergetics()
         call cleanup()
     end subroutine
@@ -258,7 +290,6 @@ contains
         call initialize()
         call monteCarloEnergetics()
         call cleanUp()
-        print *, "Beryllium"
         call printLastEnergetics()
 
     end subroutine
