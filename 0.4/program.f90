@@ -7,14 +7,15 @@ implicit none
     real(prec) :: h2plusBondLength = angstrom*1.05687
 
     energyUnit = hartree
-    metroSamples = 100000
+    metroSamples = 10000
 
     call cpu_time(startT)
   
-    call hydrogen()
+    !call hydrogen()
     !call hydrogen1s2sMixing()
     !call H2plusIon()
     !call H2plusIonBondLength()
+    call helium()
     !call beryllium()
 
     call cpu_time(endT)
@@ -126,7 +127,7 @@ contains
         initialCharacter => explicitCharacter
         allocate(upCharacters(2,1))
         upCharacters(1,1) = 1 ! 1 for bonding or antibonding
-        upCharacters(2,1) = 1 ! 1 for bonding, -1 for antibonding
+        upCharacters(2,1) = -1 ! 1 for bonding, -1 for antibonding
         allocate(downCharacters(2,0))
 
         call initialize()
@@ -213,6 +214,30 @@ contains
         print *, "H2 Molecule"
         call printLastEnergetics()
 
+    end subroutine
+
+    ! ----- HELIUM ----- !
+
+    subroutine helium()
+    implicit none
+        allocate(basis(2))
+        basis(1)%state => atomicState(1,0,0,2)
+        basis(2)%state => atomicState(1,0,0,2)
+
+        upElectrons = 1
+        downElectrons = 1
+
+        allocate(nucleii(1))
+        nucleii(1)%charge = 2
+
+        !manyBodyMethod => slaterDeterminant ! Don't use a Jastow factor
+
+        call initialize()
+        !call optimizeJastrow()
+        call monteCarloEnergetics()
+        print *, "Helium"
+        call printLastEnergetics()
+        call cleanup()
     end subroutine
 
     ! ----- BERYLLIUM ----- !

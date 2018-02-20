@@ -67,23 +67,32 @@ implicit none
     end type
 
     ! Elements definining the calculation to carry out
-    type(basisListElm), allocatable :: basis(:)
-    class(nucleus), allocatable     :: nucleii(:)
-    integer                         :: upElectrons = 0, downElectrons = 0
-    real(prec), allocatable         :: upCharacters(:,:), downCharacters(:,:)
-    procedure(manyBodyWfn), pointer :: manyBodyMethod   => slaterJastrow
-    procedure(charAssign), pointer  :: initialCharacter => sequentialCharacter
-    integer                         :: metroSamples = 10000
-    integer                         :: initMetroSamples = 1000
-    integer                         :: reblockingLength = 1000
-    real(prec)                      :: maxMetroJump = 4*angstrom ! The maximum distance an electron can move in a metropolis trial move
-    complex(prec)                   :: mcEnergyLast = 0
-    complex(prec)                   :: mcKineticEnergyLast = 0
-    complex(prec)                   :: mcPotentialEnergyLast = 0
-    complex(prec)                   :: mcReblockedVarianceLast = 0
-    complex(prec)                   :: mcEnergyErrorLast = 0
-    complex(prec)                   :: mcNuclearEnergyLast = 0
-    real(prec)                      :: energyUnit = electronVolt
+    type(basisListElm), allocatable :: basis(:)                                 ! Our electron basis states
+    class(nucleus), allocatable     :: nucleii(:)                               ! Our nucleii
+    integer                         :: upElectrons = 0, downElectrons = 0       ! The number of up and down electrons
+    real(prec), allocatable         :: upCharacters(:,:), downCharacters(:,:)   ! The coefficients of each basis state for each electron
+    procedure(manyBodyWfn), pointer :: manyBodyMethod   => slaterJastrow        ! The method used to convert our single electron states into many-body states
+    procedure(charAssign), pointer  :: initialCharacter => sequentialCharacter  ! How the electron characters upCharacters and downCharacters are initialised
+    integer                         :: metroSamples = 10000                     ! The number of metropolis monte-carlo itterations
+    integer                         :: initMetroSamples = 1000                  ! The number of metropolis itterations to be calculated then discarded to remove dependence on initial conditions
+    integer                         :: reblockingLength = 1000                  ! The block length used to calculate the reblocked variance
+    real(prec)                      :: maxMetroJump = 4*angstrom                ! The maximum distance an electron can move in a metropolis trial move
+    real(prec)                      :: energyUnit = electronVolt                ! The unit of energy we convert to when outputting information
+
+    ! Results stored from the last monte-carlo calculation
+    complex(prec)                   :: mcEnergyLast = 0            ! The calculated energy
+    complex(prec)                   :: mcKineticEnergyLast = 0     ! The kinetic energy
+    complex(prec)                   :: mcPotentialEnergyLast = 0   ! The potential energy
+    complex(prec)                   :: mcNuclearEnergyLast = 0     ! The nuclear energy (i.e nuclear-nuclear interactions)
+    complex(prec)                   :: mcReblockedVarianceLast = 0 ! The reblocked energy variance
+    complex(prec)                   :: mcEnergyErrorLast = 0       ! The estimated error on the energy
+    
+    ! Variational parameters in our jastrow factor
+    real(prec), allocatable         :: jastrowUU(:,:) ! Up - Up
+    real(prec), allocatable         :: jastrowDD(:,:) ! Down - Down
+    real(prec), allocatable         :: jastrowUD(:,:) ! Up - Down
+    real(prec), allocatable         :: jastrowUN(:,:) ! Up - Nucleus
+    real(prec), allocatable         :: jastrowDN(:,:) ! Down - Nucleus
 
 contains
 
@@ -116,9 +125,22 @@ contains
 
         ! Carry out initialization
         call initialCharacter()
+
+        ! Allocate and initialize our jastrow parameters
+        allocate(jastrowUU(upElectrons,upElectrons))
+        allocate(jastrowDD(downElectrons,downElectrons))
+        allocate(jastrowUD(upElectrons,downElectrons))
+        allocate(jastrowUN(upElectrons,size(nucleii)))
+        allocate(jastrowDN(downElectrons,size(nucleii)))
+        jastrowUU = 1
+        jastrowDD = 1
+        jastrowUD = 1
+        jastrowUN = 1
+        jastrowDN = 1
     end subroutine
 
-    ! Clean up memeory after run
+    ! Clean up memeory after run - so that we can carry out multiple
+    ! completely different calculations with the same program instance
     subroutine cleanUp()
     implicit none
         ! Clean up memory from previous run
@@ -126,8 +148,14 @@ contains
         if (allocated(downCharacters)) deallocate(downCharacters)
         if (allocated(basis)) deallocate(basis)
         if (allocated(nucleii)) deallocate(nucleii)
+        if (allocated(jastrowUU)) deallocate(jastrowUU)
+        if (allocated(jastrowDD)) deallocate(jastrowDD)
+        if (allocated(jastrowUD)) deallocate(jastrowUD)
+        if (allocated(jastrowUN)) deallocate(jastrowUN)
+        if (allocated(jastrowDN)) deallocate(jastrowDN)
 
-        ! Reset default parameters
+        ! Reset default parameters - so that the next run
+        ! doesn't use the parameters of the previous run
         initialCharacter => sequentialCharacter
         manyBodyMethod   => slaterJastrow
         upElectrons = 0
@@ -207,6 +235,7 @@ contains
         mcEnergyErrorLast = sqrt(mcReblockedVarianceLast/real(metroSamples/reblockingLength))
 
         ! Add the nuclear energy, it's the same regardless of electron config
+        nuclearEnergy = 0
         do i=1,size(nucleii)-1
             do j=i+1,size(nucleii)
                 ! N.B nuclear potental assumes it's given an electron, modify it for nuclear-nuclear interactions
@@ -462,27 +491,53 @@ contains
         do i=1,N_u-1
             do j=i+1,N_u ! i,j <=> up spin pair
                 r = norm2(upConfig(:,i) - upConfig(:,j))/angstrom
-                jastrowFactor = jastrowFactor + r/(1+r)
+                jastrowFactor = jastrowFactor + r/(1 + jastrowUU(i,j)*r)
             enddo 
         enddo
         do i=1,N_d-1
             do j=i+1,N_d ! i,j <=> down spin pair
                 r = norm2(downConfig(:,i) - downConfig(:,j))/angstrom
-                jastrowFactor = jastrowFactor + r/(1+r)
+                jastrowFactor = jastrowFactor + r/(1 + jastrowDD(i,j)*r)
             enddo 
         enddo
 
         ! Calculate different-spin jastrow contributions
-        do i=1,N_u
-            do j=1,N_d
+        do j=1,N_d
+            do i=1,N_u
                 r = norm2(upConfig(:,i) - downConfig(:,j))/angstrom
-                jastrowFactor = jastrowFactor + 0.5*r/(1+r)
+                jastrowFactor = jastrowFactor + 2*r/(1 + jastrowUD(i,j)*r)
+            enddo
+        enddo
+
+        ! Calculate up electron-nuclear jastrow contributions
+        do j=1,size(nucleii)
+            do i=1,N_u
+                r = norm2(upConfig(:,i) - nucleii(j)%centre)
+                jastrowFactor = jastrowFactor + 4*r/(1 + jastrowUN(i,j)*r)
+            enddo
+        enddo
+
+        ! Calculate down electron-nuclear jastrow contributions
+        do j=1,size(nucleii)
+            do i=1,N_d          
+                r = norm2(downConfig(:,i) - nucleii(j)%centre)
+                jastrowFactor = jastrowFactor + 4*r/(1 + jastrowDN(i,j)*r)
             enddo
         enddo
 
         jastrowFactor = exp(jastrowFactor)
 
     end function
+
+    ! Optimize our jastrow factor
+    subroutine optimizeJastrow()
+    implicit none
+        integer :: i
+        do i=1,10
+            call monteCarloEnergetics()
+            print *, "Energy: ", realpart(mcEnergyLast)/energyUnit, "error", mcEnergyErrorLast/energyUnit
+        enddo
+    end subroutine
 
     ! A slater determinant combined with a jastrow factor
     function slaterJastrow(upConfig, downConfig) result(ret)
