@@ -1,12 +1,10 @@
 ! Version 0.3
-! A program that carries out variational qunatum monte carlo
-! for the hydrogen atom, we work in SI units.
+! A program that carries out variational qunatum monte carlo calculations
 
 ! Module that carries out the monte-carlo integration
 module vqmc
 use constants
 use mpi
-!use IFPORT
 implicit none
 
     real(prec) :: permutationCPUtime = 0
@@ -22,7 +20,7 @@ implicit none
         real(prec) :: centre(3) = 0
         real(prec) :: charge = 1
     contains
-        procedure :: potential => nuclearPotential
+        procedure  :: potential => nuclearPotential
     end type
 
     interface
@@ -79,6 +77,7 @@ implicit none
     integer                         :: reblockingLength = 1000                  ! The block length used to calculate the reblocked variance
     real(prec)                      :: maxMetroJump = 4*angstrom                ! The maximum distance an electron can move in a metropolis trial move
     real(prec)                      :: energyUnit = electronVolt                ! The unit of energy we convert to when outputting information
+    logical                         :: printMetroProgress = .false.             ! Set to true to print the metropolis monte-carlo progress as it runs
 
     ! Results stored from the last monte-carlo calculation
     real(prec)                   :: mcEnergyLast = 0            ! The calculated energy
@@ -184,7 +183,7 @@ contains
         real(prec), allocatable    :: upPos(:,:,:), downPos(:,:,:), allPos(:,:,:)
         integer                    :: i, j, i2, j2, N_u, N_d, rank, nproc, ierr
         real(prec)                 :: energy, kineticEnergy, potentialEnergy, nuclearEnergy
-        real(prec)                 :: mpiEnergy, mpiKinetic, mpiPotential, mpiNuclear
+        real(prec)                 :: mpiEnergy, mpiKinetic, mpiPotential, mpiNuclear, mpiVariance
         real(prec), allocatable    :: localEnergies(:), localKineticEnergies(:), localPotentialEnergies(:)
         real(prec)                 :: dr(3)
 
@@ -209,11 +208,17 @@ contains
         kineticEnergy = 0
         do i=1,metroSamples
 
+            if (printMetroProgress) then
+                if (rank == 0) then
+                    write(*,100,advance='no') i,"/",metroSamples,char(13)
+                endif
+            endif
+
             localEnergies(i) = 0
             localKineticEnergies(i) = 0
             localPotentialEnergies(i) = 0
 
-            ! Sum potentials for all electrons
+            ! Sum nuclear potentials for all electrons
             do j=1,N_u + N_d
                 localPotentialEnergies(i) = localPotentialEnergies(i) + potential(allPos(:,j,i))
             enddo
@@ -234,22 +239,28 @@ contains
             kineticEnergy = kineticEnergy + localKineticEnergies(i)
             energy = energy + localEnergies(i)
 
+            if (abs(localEnergies(i)) > 10E6) then
+                print *, "WARNING: Very large local energy:", localEnergies(i) 
+            endif
+
         enddo
 
         mcKineticEnergyLast = kineticEnergy/real(metroSamples)
         mcPotentialEnergyLast = potentialEnergy/real(metroSamples)
         mcEnergyLast = energy/real(metroSamples)
         mcReblockedVarianceLast = reblockedVariance(localEnergies, mcEnergyLast)
-        mcEnergyErrorLast = sqrt(mcReblockedVarianceLast/real(metroSamples/reblockingLength))
 
         ! Calculate the averages across processes
         call mpi_reduce(mcEnergyLast, mpiEnergy, 1, mpi_double_precision, mpi_sum, 0, mpi_comm_world, ierr)
         call mpi_reduce(mcKineticEnergyLast, mpiKinetic, 1, mpi_double_precision, mpi_sum, 0, mpi_comm_world, ierr)
         call mpi_reduce(mcPotentialEnergyLast, mpiPotential, 1, mpi_double_precision, mpi_sum, 0, mpi_comm_world, ierr)
+        call mpi_reduce(mcReblockedVarianceLast, mpiVariance, 1, mpi_double_precision, mpi_sum, 0, mpi_comm_world, ierr)
         if (rank == 0) then
             mcEnergyLast = mpiEnergy/nproc
             mcKineticEnergyLast = mpiKinetic/nproc
             mcPotentialEnergyLast = mpiPotential/nproc
+            mcReblockedVarianceLast = mpiVariance/real(nproc)**1.5
+            mcEnergyErrorLast = sqrt(mpiVariance/real(metroSamples/reblockingLength))
         endif
 
         ! Add the nuclear energy, it's the same regardless of electron config
@@ -550,11 +561,7 @@ contains
     ! Optimize our jastrow factor
     subroutine optimizeJastrow()
     implicit none
-        integer :: i
-        do i=1,10
-            call monteCarloEnergetics()
-            print *, "Energy: ", mcEnergyLast/energyUnit, "error", mcEnergyErrorLast/energyUnit
-        enddo
+        ! TODO
     end subroutine
 
     ! A slater determinant combined with a jastrow factor
