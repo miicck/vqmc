@@ -5,7 +5,6 @@ use mpi
 implicit none
 
     real(prec) :: startT, endT, time
-    real(prec) :: h2plusBondLength = angstrom*1.05687
     integer    :: ierr, i, rank, nproc, clock
 
     call mpi_init(ierr)
@@ -21,15 +20,15 @@ implicit none
 
     ! Carry out our calculation
     energyUnit = hartree
-    metroSamples = 100/nproc
-    printMetroProgress = .true.
+    metroSamples = 100000/nproc
+    !printMetroProgress = .true.
 
-    !call hydrogen()
+    call hydrogen()
     !call helium()
+    !call heliumExtendedBasis()
     !call lithium()
     !call beryllium()
     !call boron()
-    call carbon()
 
     !call hydrogen1s2sMixing()
     !call H2plusIon()
@@ -79,9 +78,8 @@ contains
 
     subroutine helium()
     implicit none
-        allocate(basis(2))
+        allocate(basis(1))
         basis(1)%state => atomicState(1,0,0,2)
-        basis(2)%state => atomicState(1,0,0,2)
 
         upElectrons = 1
         downElectrons = 1
@@ -92,10 +90,31 @@ contains
         !manyBodyMethod => slaterDeterminant ! Don't use a Jastow factor
 
         call initialize()
+        !call optimizeJastrow()
         call monteCarloEnergetics()
         call printLastEnergetics()
         call cleanup()
 
+    end subroutine
+
+    subroutine heliumExtendedBasis()
+    implicit none
+        allocate(basis(2))
+        basis(1)%state => atomicState(1,0,0,2)
+        basis(2)%state => atomicState(1,0,0,1)
+
+        upElectrons = 1
+        downElectrons = 1
+
+        allocate(nucleii(1))
+        nucleii(1)%charge = 2
+
+        call initialize()
+        call setAllJastrowParams(real(1.30672,kind=prec))
+        call optimizeCharacters()
+        call monteCarloEnergetics()
+        call printLastEnergetics()
+        call cleanup()
     end subroutine
 
     ! ----- LITHIUM ----- !
@@ -171,34 +190,6 @@ contains
 
     end subroutine
 
-    ! ----- CARBON ----- !
-    
-    subroutine carbon()
-    implicit none
-
-        ! THE BELOW DOESNT OBEY HUNDS RULES
-        ! PERHAPS IMPLEMENT?
-    
-        ! Setup our basis 1s2 2s2
-        allocate(basis(3))
-        basis(1)%state => atomicState(1,0,0,4)
-        basis(2)%state => atomicState(2,0,0,4)
-        basis(3)%state => atomicState(2,1,-1,4)
-
-        ! Describe our system
-        upElectrons    = 3
-        downElectrons  = 3
-
-        allocate(nucleii(1))
-        nucleii(1)%charge = 6
-
-        call initialize()
-        call monteCarloEnergetics()
-        call printLastEnergetics()
-        call cleanUp()
-
-    end subroutine
-
     ! ----- MOLECULES ----- !
 
     ! Get data for hydrogen exited state mixing
@@ -265,27 +256,29 @@ contains
     subroutine H2plusIon()
     implicit none
         
+        real(prec), parameter :: h2plusBondLength = angstrom*1.240
         integer :: i, grid
 
         ! Setup our basis and many body wavefunction
         allocate(basis(2))
         basis(1)%state => atomicState(1,0,0,1)
         basis(2)%state => atomicState(1,0,0,1)
-        basis(2)%centre(3) = h2plusBondLength
+        basis(2)%centre = (/0.0D0,0.0D0,h2plusBondLength/)
 
         ! Describe our system
-        upElectrons      = 1
+        upElectrons          = 1
         allocate(nucleii(2))
         nucleii(1)%centre    = 0
         nucleii(1)%charge    = 1
-        nucleii(2)%centre(3) = h2plusBondLength
-        nucleii(2)%charge    = 1
+        nucleii(2)%centre    = (/0.0D0,0.0D0,h2plusBondLength/)
+
+        print *, nucleii(2)%centre
 
         ! Use explicit electronic characters
         initialCharacter => explicitCharacter
         allocate(upCharacters(2,1))
         upCharacters(1,1) = 1 ! 1 for bonding or antibonding
-        upCharacters(2,1) = -1 ! 1 for bonding, -1 for antibonding
+        upCharacters(2,1) = 1 ! 1 for bonding, -1 for antibonding
         allocate(downCharacters(2,0))
 
         call initialize()
@@ -300,6 +293,7 @@ contains
     implicit none
         
         integer :: i, grid, rank, ierr
+        real(prec) :: h2plusBondLength = 1
         call mpi_comm_rank(mpi_comm_world, rank, ierr)
 
         if (rank == 0) then

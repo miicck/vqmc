@@ -210,7 +210,7 @@ contains
 
             if (printMetroProgress) then
                 if (rank == 0) then
-                    write(*,100,advance='no') i,"/",metroSamples,char(13)
+                    print *, i,"/",metroSamples,char(13)
                 endif
             endif
 
@@ -558,10 +558,80 @@ contains
 
     end function
 
+    ! Optimize our electronic characters
+    subroutine optimizeCharacters()
+    implicit none
+        real(prec) :: c
+        integer    :: i, rank, ierr, grid
+
+        call mpi_comm_rank(mpi_comm_world, rank, ierr)
+        if (rank==0) open(unit=2,file="characterOptimization")
+
+        i = 0
+        grid = 100
+
+        do i=0,grid
+            c = i/real(grid)
+            downCharacters(1,1) = 1-c
+            downCharacters(2,1) = c
+            call monteCarloEnergetics()
+
+            if (rank==0) then
+                print *, "Character optimization progress: ", i,"/",grid
+                write (2,*) c,",",mcEnergyLast/energyUnit
+            endif
+
+        enddo
+
+        if (rank==0) close(unit=2)
+
+    end subroutine
+
     ! Optimize our jastrow factor
     subroutine optimizeJastrow()
     implicit none
-        ! TODO
+        real(prec) :: b = 1
+        integer    :: i, rank, ierr, status, iterWithoutChange, grid
+
+        call mpi_comm_rank(mpi_comm_world, rank, ierr)
+
+        i = 0
+        grid = 100
+
+        if (rank==0) open(unit=2,file="jastrowOptimization")
+
+        do i=0,grid
+
+            ! Calculate the energy at this value of the
+            ! jastrow parameter
+            b = 4*i/real(grid)
+            call setAllJastrowParams(b)
+            call monteCarloEnergetics()
+
+            ! Accept or reject move in b based on result
+            ! (done on rank 0 only)
+            if (rank == 0) then
+                print *, "Jastrow factor optimization step:", i
+                print *, "    Energy:", mcEnergyLast/energyUnit
+                print *, "    Jastrow parameter:",b
+                write (2,*) b,",", mcEnergyLast/energyUnit
+            endif
+
+        enddo
+
+        if (rank == 0) close(unit=2)
+
+    end subroutine
+
+    ! Set all jastrow parameters to b
+    subroutine setAllJastrowParams(b)
+    implicit none
+        real(prec) :: b
+        jastrowUU = b
+        jastrowDD = b
+        jastrowUD = b
+        jastrowUN = b
+        jastrowDN = b
     end subroutine
 
     ! A slater determinant combined with a jastrow factor
