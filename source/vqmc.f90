@@ -1,6 +1,4 @@
-! Version 0.3
-! A program that carries out variational qunatum monte carlo
-! for the hydrogen atom, we work in SI units.
+! A program that carries out variational qunatum monte carlo, we work in SI units.
 
 ! Module that carries out the monte-carlo integration
 module vqmc
